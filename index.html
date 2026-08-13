@@ -133,6 +133,7 @@
 
 <div class="footer-link"><a href="#" onclick="alert('感想はメモ帳などにひとまず控えておいてくださいね。'); return false;">この秘書について</a></div>
 
+<button class="fab" onclick="openTalkSheet()" style="bottom:92px; background:var(--mid);">🎙</button>
 <button class="fab" onclick="openAddSheet(null)">＋</button>
 
 <div id="sheetRoot"></div>
@@ -539,6 +540,13 @@ function openAddSheet(dateISO){
   pending = null;
   renderSheet();
 }
+function openTalkSheet(){
+  presetDate = null;
+  pending = null;
+  voiceTranscript = '';
+  sheetMode = 'talk';
+  renderSheet();
+}
 function closeSheet(){
   if (recognition) { try{ recognition.stop(); }catch(e){} }
   listening = false; voiceTranscript='';
@@ -572,6 +580,21 @@ function renderSheet(){
       <div class="voice-status">${listening ? '聞いています…' : (voiceTranscript || 'タップして話しかけてください')}</div>
       <div id="voiceError"></div>
     `;
+  } else if (sheetMode === 'talk') {
+    body = `
+      <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:12px;line-height:1.6;">
+        「今日の予定教えて」「明日は何がある?」のように聞くと、声で答えます。<br/>
+        「歯医者を来週の水曜に追加して」のように話すと、予定として登録します。
+      </div>
+      <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
+      <div class="voice-status">${listening ? '聞いています…' : (voiceTranscript || 'タップして話しかけてください')}</div>
+      <div id="voiceError"></div>
+    `;
+  } else if (sheetMode === 'talk-result') {
+    body = `
+      <div style="font-size:15px;line-height:1.7;padding:12px 2px;background:var(--paper);border-radius:10px;">${escapeHTML(voiceTranscript)}</div>
+      <button class="primary-btn" onclick="sheetMode='talk'; voiceTranscript=''; renderSheet();">🎙 もう一度話す</button>
+    `;
   } else if (sheetMode === 'confirm' && pending) {
     body = `
       <div class="field"><div class="field-label">タイトル</div><input type="text" id="pTitle" value="${escapeHTML(pending.title)}"></div>
@@ -585,7 +608,7 @@ function renderSheet(){
   document.getElementById('sheetRoot').innerHTML = `
     <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
       <div class="sheet">
-        <div class="sheet-head"><div class="sheet-title">予定を追加</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
+        <div class="sheet-head"><div class="sheet-title">${sheetMode==='talk'||sheetMode==='talk-result' ? '秘書に話しかける' : '予定を追加'}</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
         ${body}
       </div>
     </div>`;
@@ -644,6 +667,10 @@ function toggleVoice(){
   recognition.onend = ()=>{
     listening = false;
     if (finalText.trim()) {
+      if (sheetMode === 'talk') {
+        handleTalkIntent(finalText.trim());
+        return;
+      }
       const parsed = parseJapaneseDate(finalText.trim(), new Date());
       pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', note: parsed.note };
       sheetMode = 'confirm';
@@ -663,6 +690,43 @@ function confirmSave(){
   if (!title) { document.getElementById('confirmError').innerHTML = `<div class="error-line">タイトルを入力してください。</div>`; return; }
   addTask(title, dueDate, note);
   closeSheet();
+}
+
+/* ---------------- 話しかける（問い合わせ or 追加の自動判定） ---------------- */
+function buildScheduleSpeech(dueDate){
+  const label = formatJP(dueDate);
+  const list = tasks.filter(t=>t.dueDate===dueDate && !t.done);
+  if (list.length===0) return `${label}の予定は、登録されていません。`;
+  return `${label}は、${list.map(t=>t.title).join('、')}です。`;
+}
+
+function handleTalkIntent(text){
+  const isQuery = /教えて|何がある|なにがある|ある[？?]|確認して|予定は[？?]?$/.test(text);
+  const parsed = parseJapaneseDate(text, new Date());
+
+  if (isQuery) {
+    const dueDate = parsed.dueDate || todayISO();
+    const spoken = buildScheduleSpeech(dueDate);
+    voiceTranscript = spoken;
+    sheetMode = 'talk-result';
+    renderSheet();
+    if (window.speechSynthesis) {
+      const u = new SpeechSynthesisUtterance(spoken);
+      u.lang = 'ja-JP'; u.rate = 1.0;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(u);
+    }
+  } else {
+    let title = parsed.title
+      .replace(/予定を?(登録|追加)して?/g, '')
+      .replace(/(登録|追加)して?/g, '')
+      .replace(/お願い(します)?/g, '')
+      .trim();
+    if (!title) title = '新しい予定';
+    pending = { title, dueDate: parsed.dueDate || '', note: parsed.note };
+    sheetMode = 'confirm';
+    renderSheet();
+  }
 }
 
 /* ---------------- 初期化 ---------------- */
