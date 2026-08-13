@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ひづけ秘書</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+  :root{
+    --ink:#2E4034; --ink-soft:#71897A; --paper:#EEF1E7; --card:#F8FAF3;
+    --urgent:#B0684C; --urgent-dark:#8A4F39; --mid:#9B8A3F; --green:#5C8567;
+  }
+  * { box-sizing: border-box; }
+  body{ margin:0; background:var(--paper); font-family:'Noto Sans JP',sans-serif; color:var(--ink); padding-bottom:110px; }
+  .header{ padding:28px 20px 8px; display:flex; align-items:center; gap:16px; }
+  .stamp-today{ width:72px; height:72px; border-radius:50%; border:3px solid var(--ink);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    transform:rotate(-6deg); box-shadow: inset 0 0 0 3px var(--paper), inset 0 0 0 4.5px var(--ink); flex-shrink:0; }
+  .stamp-today .md{ font-family:'Zilla Slab',serif; font-weight:700; font-size:22px; line-height:1; }
+  .stamp-today .wd{ font-size:11px; margin-top:2px; }
+  .app-name{ font-size:12px; letter-spacing:2px; color:var(--ink-soft); font-weight:500; }
+  .today-label{ font-family:'Zilla Slab',serif; font-weight:600; font-size:20px; }
+
+  .tabs{ padding:8px 16px 4px; display:flex; gap:8px; }
+  .tab-btn{ display:flex; align-items:center; gap:6px; padding:7px 14px; border-radius:20px;
+    border:1px solid rgba(46,64,52,0.2); background:transparent; color:var(--ink-soft);
+    font-size:12.5px; font-weight:500; cursor:pointer; font-family:inherit; }
+  .tab-btn.active{ background:var(--ink); color:var(--card); border-color:var(--ink); }
+
+  .briefing{ margin:10px 16px; background:var(--card); border:1px solid rgba(0,0,0,0.07);
+    border-radius:12px; padding:12px 14px; display:flex; gap:10px; align-items:flex-start; }
+  .briefing.overdue{ background:rgba(176,104,76,0.08); border-color:rgba(176,104,76,0.35); }
+  .briefing .txt{ flex:1; font-size:13.5px; line-height:1.5; }
+  .briefing .tomorrow{ font-size:12.5px; color:var(--ink-soft); margin-top:4px; }
+  .speak-btn{ width:34px; height:34px; border-radius:50%; border:1px solid rgba(46,64,52,0.2);
+    background:var(--paper); color:var(--ink); display:flex; align-items:center; justify-content:center;
+    cursor:pointer; flex-shrink:0; font-size:15px; }
+
+  .list{ padding:0 16px; display:flex; flex-direction:column; gap:10px; }
+  .empty{ background:var(--card); border:1px solid rgba(0,0,0,0.07); border-radius:14px;
+    padding:36px 20px; text-align:center; color:var(--ink-soft); }
+  .task-card{ background:var(--card); border:1px solid rgba(0,0,0,0.07); border-radius:14px;
+    padding:14px; display:flex; align-items:center; gap:14px; }
+  .task-card.done{ opacity:0.55; }
+  .check{ width:28px; height:28px; border-radius:50%; border:2px solid var(--ink-soft);
+    background:transparent; display:flex; align-items:center; justify-content:center; flex-shrink:0; cursor:pointer; color:var(--card); font-size:14px; }
+  .check.done{ background:var(--green); border-color:var(--green); }
+  .task-body{ flex:1; min-width:0; }
+  .task-title{ font-weight:600; font-size:15.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .task-title.done{ text-decoration:line-through; }
+  .task-sub{ font-size:12.5px; color:var(--ink-soft); margin-top:2px; }
+  .del-btn{ background:none; border:none; color:var(--ink-soft); cursor:pointer; padding:4px; font-size:16px; }
+
+  .stamp{ border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-family:'Zilla Slab',serif; font-weight:700; transform:rotate(-4deg); line-height:1; text-align:center; flex-shrink:0; }
+  .stamp-wrap{ display:flex; flex-direction:column; align-items:center; gap:2px; }
+  .stamp-label{ font-size:10px; font-weight:600; }
+
+  .cal-card{ margin:0 16px; background:var(--card); border:1px solid rgba(0,0,0,0.07); border-radius:14px; padding:14px 12px; }
+  .cal-nav{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .cal-nav button{ background:none; border:none; color:var(--ink); cursor:pointer; padding:6px; font-size:18px; }
+  .cal-month{ font-family:'Zilla Slab',serif; font-weight:600; font-size:16px; }
+  .cal-weekdays, .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); }
+  .cal-weekdays div{ font-size:11px; color:var(--ink-soft); text-align:center; padding:4px 0; }
+  .cal-grid{ gap:3px; }
+  .cal-cell{ aspect-ratio:1; border:1px solid transparent; border-radius:8px; background:transparent;
+    color:var(--ink); cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    font-size:13px; font-family:inherit; padding:0; }
+  .cal-cell.out{ color:rgba(113,137,122,0.45); }
+  .cal-cell.today{ border-color:rgba(46,64,52,0.5); font-weight:700; }
+  .cal-cell.selected{ border:2px solid var(--ink); background:rgba(46,64,52,0.06); }
+  .cal-dot{ width:5px; height:5px; border-radius:50%; margin-top:2px; }
+  .sel-day-header{ display:flex; justify-content:space-between; align-items:center; margin:14px 16px 8px; }
+  .sel-day-label{ font-size:13px; color:var(--ink-soft); font-weight:500; }
+  .add-here-btn{ display:flex; align-items:center; gap:4px; font-size:12px; color:var(--ink); background:none;
+    border:1px solid rgba(46,64,52,0.2); border-radius:20px; padding:5px 10px; cursor:pointer; font-family:inherit; }
+  .sel-list{ padding:0 16px; display:flex; flex-direction:column; gap:8px; }
+
+  .fab{ position:fixed; bottom:24px; right:20px; width:58px; height:58px; border-radius:50%;
+    background:var(--ink); color:var(--card); border:none; box-shadow:0 6px 16px rgba(0,0,0,0.2);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:26px; }
+
+  .sheet-overlay{ position:fixed; inset:0; background:rgba(26,31,51,0.32); display:flex; align-items:flex-end;
+    z-index:50; }
+  .sheet{ background:var(--card); width:100%; max-width:480px; margin:0 auto; border-radius:20px 20px 0 0;
+    padding:20px; max-height:85vh; overflow-y:auto; }
+  .sheet-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+  .sheet-title{ font-weight:700; font-size:16px; }
+  .close-btn{ background:none; border:none; cursor:pointer; color:var(--ink-soft); font-size:20px; }
+
+  .menu-btn{ display:flex; align-items:center; gap:10px; padding:14px 16px; border-radius:12px;
+    border:1px solid rgba(46,64,52,0.15); background:var(--paper); font-size:15px; font-weight:500;
+    cursor:pointer; color:var(--ink); width:100%; margin-bottom:10px; font-family:inherit; }
+  textarea, input[type=text], input[type=date]{ width:100%; border:1px solid rgba(113,137,122,0.4);
+    border-radius:10px; padding:10px 12px; font-family:inherit; font-size:15px; background:var(--paper); }
+  textarea{ resize:none; }
+  .field{ margin-bottom:12px; }
+  .field-label{ font-size:12px; color:var(--ink-soft); margin-bottom:4px; font-weight:500; }
+  .primary-btn{ width:100%; padding:13px; border-radius:12px; border:none; background:var(--ink);
+    color:var(--card); font-size:15px; font-weight:600; cursor:pointer; font-family:inherit; margin-top:12px; }
+  .primary-btn:disabled{ opacity:0.5; }
+  .error-line{ color:var(--urgent); font-size:12.5px; margin-top:8px; }
+  .mic-circle{ width:84px; height:84px; border-radius:50%; border:none; background:var(--ink); color:var(--card);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:28px; margin:0 auto; }
+  .mic-circle.listening{ background:var(--urgent); }
+  .voice-status{ text-align:center; margin-top:12px; font-size:13px; color:var(--ink-soft); min-height:40px; }
+  .footer-link{ text-align:center; margin-top:22px; }
+  .footer-link a{ color:var(--ink-soft); font-size:12px; }
+  .loading-center{ text-align:center; padding:40px; color:var(--ink-soft); }
+  .spin{ display:inline-block; animation:spin 1s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="stamp-today"><div class="md" id="todayMD"></div><div class="wd" id="todayWD"></div></div>
+  <div style="flex:1;">
+    <div class="app-name">ひづけ秘書</div>
+    <div class="today-label" id="todayLabel"></div>
+  </div>
+  <button id="syncBtn" onclick="openSyncSheet()" style="background:none;border:1px solid rgba(46,64,52,0.2);border-radius:20px;padding:6px 12px;font-size:12px;color:var(--ink-soft);cursor:pointer;font-family:inherit;white-space:nowrap;">🔗 未連携</button>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" id="tabList" onclick="setView('list')">📋 リスト</button>
+  <button class="tab-btn" id="tabCal" onclick="setView('calendar')">🗓 カレンダー</button>
+</div>
+
+<div id="briefingArea"></div>
+<div id="mainArea"></div>
+
+<div class="footer-link"><a href="#" onclick="alert('感想はメモ帳などにひとまず控えておいてくださいね。'); return false;">この秘書について</a></div>
+
+<button class="fab" onclick="openAddSheet(null)">＋</button>
+
+<div id="sheetRoot"></div>
+
+<script>
+/* ---------------- データ ---------------- */
+let tasks = [];
+try { tasks = JSON.parse(localStorage.getItem('hizuke_tasks') || '[]'); } catch(e){ tasks = []; }
+function saveTasks(){ localStorage.setItem('hizuke_tasks', JSON.stringify(tasks)); queuePush(); }
+
+/* ---------------- GitHub Gist 同期 ---------------- */
+let ghToken = localStorage.getItem('hizuke_gh_token') || '';
+let ghGistId = localStorage.getItem('hizuke_gist_id') || '';
+let pushTimer = null;
+let syncing = false;
+
+function ghHeaders(){ return { 'Authorization': `token ${ghToken}`, 'Accept': 'application/vnd.github+json' }; }
+
+function updateSyncBtn(state){
+  const btn = document.getElementById('syncBtn');
+  if (!btn) return;
+  if (!ghToken || !ghGistId) { btn.textContent = '🔗 未連携'; return; }
+  if (state === 'syncing') btn.textContent = '🔄 同期中';
+  else if (state === 'error') btn.textContent = '⚠️ 同期エラー';
+  else btn.textContent = '✅ 連携中';
+}
+
+async function createGist(){
+  const res = await fetch('https://api.github.com/gists', {
+    method: 'POST',
+    headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      description: 'ひづけ秘書 データ',
+      public: false,
+      files: { 'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) } }
+    })
+  });
+  if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(`gist作成に失敗 (HTTP ${res.status}) ${t.slice(0,150)}`); }
+  const data = await res.json();
+  return data.id;
+}
+
+async function pullFromGist(){
+  const res = await fetch(`https://api.github.com/gists/${ghGistId}`, { headers: ghHeaders() });
+  if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(`取得に失敗 (HTTP ${res.status}) ${t.slice(0,150)}`); }
+  const data = await res.json();
+  const file = data.files && data.files['hizuke-tasks.json'];
+  if (file && file.content) {
+    try { tasks = JSON.parse(file.content) || []; localStorage.setItem('hizuke_tasks', JSON.stringify(tasks)); } catch(e){}
+  }
+}
+
+async function pushToGist(){
+  if (!ghToken || !ghGistId) return;
+  syncing = true; updateSyncBtn('syncing');
+  try {
+    const res = await fetch(`https://api.github.com/gists/${ghGistId}`, {
+      method: 'PATCH',
+      headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: { 'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) } } })
+    });
+    if (!res.ok) throw new Error('保存に失敗 (HTTP ' + res.status + ')');
+    updateSyncBtn('ok');
+  } catch(e) {
+    updateSyncBtn('error');
+  } finally { syncing = false; }
+}
+
+function queuePush(){
+  if (!ghToken || !ghGistId) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushToGist, 900);
+}
+
+async function initialPull(){
+  if (!ghToken || !ghGistId) { updateSyncBtn(); return; }
+  updateSyncBtn('syncing');
+  try { await pullFromGist(); updateSyncBtn('ok'); renderAll(); }
+  catch(e) { updateSyncBtn('error'); }
+}
+
+function openSyncSheet(){
+  document.getElementById('sheetRoot').innerHTML = `
+    <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
+      <div class="sheet">
+        <div class="sheet-head"><div class="sheet-title">GitHubで同期</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
+        <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:12px;line-height:1.6;">
+          GitHubの「Gist」にデータを保存して、複数端末で共有します。<br/>
+          1台目: トークンだけ入力して「接続する」→ 自動でGistが作られます。<br/>
+          2台目以降: 1台目に表示されたGist IDも一緒に入力してください。
+        </div>
+        <div class="field">
+          <div class="field-label">アクセストークン(gist権限)</div>
+          <input type="text" id="syncToken" value="${escapeHTML(ghToken)}" placeholder="ghp_...">
+          <div style="margin-top:6px;"><a href="https://github.com/settings/tokens/new?scopes=gist&description=hizuke-hisho" target="_blank" style="font-size:12px;color:var(--ink);">→ トークンをGitHubで作成する</a></div>
+        </div>
+        <div class="field">
+          <div class="field-label">Gist ID（2台目以降のみ入力・空欄なら新規作成）</div>
+          <input type="text" id="syncGistId" value="${escapeHTML(ghGistId)}" placeholder="例）a1b2c3d4e5f6...">
+        </div>
+        <div id="syncError"></div>
+        <button class="primary-btn" onclick="connectSync()">接続する</button>
+        ${ghGistId ? `<div style="margin-top:14px;font-size:12px;color:var(--ink-soft);">現在のGist ID:<br/><b style="user-select:all;color:var(--ink);">${ghGistId}</b><br/>（この文字列を他の端末の設定にも入力してください）</div>` : ''}
+      </div>
+    </div>`;
+}
+
+async function connectSync(){
+  const token = document.getElementById('syncToken').value.trim();
+  const gistIdInput = document.getElementById('syncGistId').value.trim();
+  if (!token) { document.getElementById('syncError').innerHTML = `<div class="error-line">トークンを入力してください。</div>`; return; }
+  ghToken = token;
+  localStorage.setItem('hizuke_gh_token', ghToken);
+  try {
+    if (gistIdInput) {
+      ghGistId = gistIdInput;
+      localStorage.setItem('hizuke_gist_id', ghGistId);
+      await pullFromGist();
+    } else {
+      ghGistId = await createGist();
+      localStorage.setItem('hizuke_gist_id', ghGistId);
+    }
+    closeSheet();
+    updateSyncBtn('ok');
+    renderAll();
+  } catch(e) {
+    document.getElementById('syncError').innerHTML = `<div class="error-line">接続に失敗しました: ${escapeHTML(e.message || String(e))}</div>`;
+  }
+}
+
+let view = 'list';
+let monthCursor = new Date(); monthCursor.setDate(1); monthCursor.setHours(0,0,0,0);
+let selectedDate = todayISO();
+let presetDate = null;
+let sheetMode = 'menu';
+let pending = null;
+let recognition = null;
+let listening = false;
+let voiceTranscript = '';
+
+const WD = ['日','月','火','水','木','金','土'];
+
+function fmt(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; }
+function todayISO(){ const d=new Date(); d.setHours(0,0,0,0); return fmt(d); }
+function daysUntil(iso){ if(!iso) return null; const t=new Date(); t.setHours(0,0,0,0); const d=new Date(iso+'T00:00:00'); return Math.round((d-t)/86400000); }
+function formatJP(iso){ if(!iso) return ''; const d=new Date(iso+'T00:00:00'); return `${d.getMonth()+1}月${d.getDate()}日(${WD[d.getDay()]})`; }
+function stampColor(diff){ if(diff===null) return 'var(--ink-soft)'; if(diff<0) return 'var(--urgent-dark)'; if(diff<=3) return 'var(--urgent)'; if(diff<=7) return 'var(--mid)'; return 'var(--ink)'; }
+function stampLabel(diff){ if(diff===null) return '日付未定'; if(diff<0) return `期限切${Math.abs(diff)}日超過`; if(diff===0) return '本日締切'; return `あと${diff}日`; }
+
+/* ---------------- ルールベースの日本語日付パーサー ---------------- */
+function parseJapaneseDate(rawText, base){
+  let text = (rawText || '').replace(/\s+/g,' ').trim();
+  let title = text;
+  let dueDate = null;
+  let note = '';
+  const b = new Date(base); b.setHours(0,0,0,0);
+
+  // 明後日 / 明日 / 今日
+  if (/明後日/.test(text)) { const d=new Date(b); d.setDate(d.getDate()+2); dueDate=fmt(d); title=title.replace(/明後日/,''); }
+  else if (/明日/.test(text)) { const d=new Date(b); d.setDate(d.getDate()+1); dueDate=fmt(d); title=title.replace(/明日/,''); }
+  else if (/今日|本日/.test(text)) { dueDate=fmt(b); title=title.replace(/今日|本日/,''); }
+
+  // ◯月◯日 / ◯/◯
+  if (!dueDate) {
+    const m = text.match(/(\d{1,2})\s*[\/月]\s*(\d{1,2})\s*日?/);
+    if (m) {
+      const month=parseInt(m[1],10), day=parseInt(m[2],10);
+      let cand = new Date(b.getFullYear(), month-1, day);
+      if (cand < b) cand = new Date(b.getFullYear()+1, month-1, day);
+      dueDate = fmt(cand);
+      title = title.replace(m[0], '');
+    }
+  }
+
+  // N日後 / N日以内
+  if (!dueDate) {
+    const m2 = text.match(/(\d{1,3})\s*日\s*(後|以内)/);
+    if (m2) {
+      const n = parseInt(m2[1],10);
+      const d = new Date(b); d.setDate(d.getDate()+n);
+      dueDate = fmt(d);
+      title = title.replace(m2[0], '');
+    }
+  }
+
+  // 今週末
+  if (!dueDate && /今週末/.test(text)) {
+    const diff = (6 - b.getDay() + 7) % 7;
+    const d = new Date(b); d.setDate(b.getDate()+diff);
+    dueDate = fmt(d);
+    title = title.replace(/今週末/, '');
+  }
+
+  // 来週/今週 + 曜日、または曜日のみ
+  if (!dueDate) {
+    const m3 = text.match(/(来週|今週)?\s*([日月火水木金土])曜日?/);
+    if (m3) {
+      const targetIdx = WD.indexOf(m3[2]);
+      if (m3[1] === '来週') {
+        let daysToNextMonday = (8 - b.getDay()) % 7; if (daysToNextMonday===0) daysToNextMonday=7;
+        const nextMonday = new Date(b); nextMonday.setDate(b.getDate()+daysToNextMonday);
+        const offsetFromMonday = (targetIdx - 1 + 7) % 7;
+        const target = new Date(nextMonday); target.setDate(nextMonday.getDate()+offsetFromMonday);
+        dueDate = fmt(target);
+      } else {
+        const diff2 = (targetIdx - b.getDay() + 7) % 7;
+        const target = new Date(b); target.setDate(b.getDate()+diff2);
+        dueDate = fmt(target);
+      }
+      title = title.replace(m3[0], '');
+    }
+  }
+
+  // 時刻
+  const tm = text.match(/(\d{1,2})時(\d{1,2}分)?/);
+  if (tm) { note = tm[0] + 'から'; title = title.replace(tm[0], ''); }
+
+  title = title.replace(/まで(に)?/g,'').replace(/[、,]/g,' ').replace(/^[のにへを\s]+/,'').replace(/[のにへを\s]+$/,'').trim();
+  if (!title) title = '新しい予定';
+  if (title.length > 40) title = title.slice(0,40);
+
+  return { title, dueDate, note };
+}
+
+/* ---------------- 描画: ヘッダー ---------------- */
+function renderHeader(){
+  const t = new Date();
+  document.getElementById('todayMD').textContent = `${t.getMonth()+1}/${t.getDate()}`;
+  document.getElementById('todayWD').textContent = `(${WD[t.getDay()]})`;
+  document.getElementById('todayLabel').textContent = `${t.getFullYear()}年${t.getMonth()+1}月${t.getDate()}日`;
+}
+
+/* ---------------- 描画: 秘書からの一言 ---------------- */
+function renderBriefing(){
+  const tISO = todayISO();
+  const overdue = tasks.filter(x=>!x.done && x.dueDate && x.dueDate < tISO);
+  const dueToday = tasks.filter(x=>!x.done && x.dueDate === tISO);
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1);
+  const tomorrowISO = fmt(tomorrow);
+  const dueTomorrow = tasks.filter(x=>!x.done && x.dueDate === tomorrowISO);
+
+  let briefing;
+  if (overdue.length>0) briefing = `「${overdue[0].title}」など${overdue.length}件、期限を過ぎたままです。終わっていれば完了にしておきましょう。`;
+  else if (dueToday.length>0) briefing = `今日は「${dueToday[0].title}」${dueToday.length>1?`など${dueToday.length}件`:''}が締切です。今日中に終わりましたか？`;
+  else if (tasks.filter(x=>!x.done).length>0) briefing = '今日が締切のものはありません。この調子で進めましょう。';
+  else briefing = '今のところ、やることは登録されていません。';
+
+  const tomorrowLabel = `${tomorrow.getMonth()+1}月${tomorrow.getDate()}日`;
+  const tomorrowLine = dueTomorrow.length>0
+    ? `明日${tomorrowLabel}は、${dueTomorrow.map(x=>x.title).join('、')}があります。`
+    : `明日${tomorrowLabel}は、今のところ締切の予定はありません。`;
+
+  window.__briefingText = `おはようございます、秘書です。${briefing} ${tomorrowLine}`;
+
+  document.getElementById('briefingArea').innerHTML = `
+    <div class="briefing ${overdue.length>0?'overdue':''}">
+      <span>🖋️</span>
+      <div class="txt">
+        <div style="color:${overdue.length>0?'var(--urgent-dark)':'var(--ink)'}">${briefing}</div>
+        <div class="tomorrow">${tomorrowLine}</div>
+      </div>
+      <button class="speak-btn" onclick="speakBriefing()">🔊</button>
+    </div>`;
+}
+
+function speakBriefing(){
+  if (!window.speechSynthesis) { alert('この端末では音声読み上げに対応していません。'); return; }
+  const u = new SpeechSynthesisUtterance(window.__briefingText || '');
+  u.lang = 'ja-JP'; u.rate = 1.0;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(u);
+}
+
+/* ---------------- 描画: リスト ---------------- */
+function renderList(){
+  const sorted = [...tasks].sort((a,b)=>{
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    if (!a.dueDate) return 1;
+    if (!b.dueDate) return -1;
+    return a.dueDate.localeCompare(b.dueDate);
+  });
+
+  if (sorted.length === 0) {
+    return `<div class="list"><div class="empty">📅<br/><b>まだ予定がありません</b><br/><span style="font-size:13px">右下の＋から、テキスト・写真・声で追加できます</span></div></div>`;
+  }
+
+  return `<div class="list">${sorted.map(t=>{
+    const diff = t.dueDate ? daysUntil(t.dueDate) : null;
+    const stampHTML = !t.done ? `
+      <div class="stamp-wrap">
+        <div class="stamp" style="width:50px;height:50px;border:2.5px solid ${stampColor(diff)};color:${stampColor(diff)};box-shadow:inset 0 0 0 3px var(--card), inset 0 0 0 4px ${stampColor(diff)}55;">
+          ${diff===null ? `<span style="font-size:11px">未定</span>` : diff<0 ? `<span style="font-size:16px">済</span>` : `<div><div style="font-size:17px">${diff}</div><div style="font-size:8px;font-family:'Noto Sans JP',sans-serif;font-weight:500">日後</div></div>`}
+        </div>
+        <div class="stamp-label" style="color:${stampColor(diff)}">${stampLabel(diff)}</div>
+      </div>` : '';
+    return `
+      <div class="task-card ${t.done?'done':''}">
+        <button class="check ${t.done?'done':''}" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>
+        <div class="task-body">
+          <div class="task-title ${t.done?'done':''}">${escapeHTML(t.title)}</div>
+          <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
+        </div>
+        ${stampHTML}
+        <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
+      </div>`;
+  }).join('')}</div>`;
+}
+
+/* ---------------- 描画: カレンダー ---------------- */
+function buildMonthGrid(cursor){
+  const first = new Date(cursor);
+  const startOffset = first.getDay();
+  const gridStart = new Date(first); gridStart.setDate(gridStart.getDate()-startOffset);
+  const cells = [];
+  for (let i=0;i<42;i++){ const d=new Date(gridStart); d.setDate(gridStart.getDate()+i); cells.push(d); }
+  return cells;
+}
+
+function dayDotColor(iso, byDate){
+  const list = byDate[iso] || [];
+  const undone = list.filter(t=>!t.done);
+  if (undone.length===0) return list.length>0 ? 'var(--green)' : 'transparent';
+  return stampColor(daysUntil(iso));
+}
+
+function renderCalendar(){
+  const cells = buildMonthGrid(monthCursor);
+  const curMonth = monthCursor.getMonth();
+  const tISO = todayISO();
+  const byDate = {};
+  tasks.forEach(t=>{ if(!t.dueDate) return; (byDate[t.dueDate] = byDate[t.dueDate]||[]).push(t); });
+
+  const gridHTML = cells.map(d=>{
+    const iso = fmt(d);
+    const inMonth = d.getMonth()===curMonth;
+    const isToday = iso===tISO;
+    const isSel = iso===selectedDate;
+    const dot = dayDotColor(iso, byDate);
+    return `<button class="cal-cell ${inMonth?'':'out'} ${isToday?'today':''} ${isSel?'selected':''}" onclick="selectDate('${iso}')">
+      <span>${d.getDate()}</span><span class="cal-dot" style="background:${dot}"></span>
+    </button>`;
+  }).join('');
+
+  const selTasks = (byDate[selectedDate]||[]).slice().sort((a,b)=>(a.done?1:0)-(b.done?1:0));
+  const selListHTML = selTasks.length===0
+    ? `<div style="font-size:13px;color:var(--ink-soft);padding:10px 2px;">予定はありません</div>`
+    : selTasks.map(t=>`
+      <div class="task-card" style="padding:10px 12px;${t.done?'opacity:0.55;':''}">
+        <button class="check ${t.done?'done':''}" style="width:24px;height:24px;font-size:12px;" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>
+        <div style="flex:1;font-size:14px;font-weight:500;${t.done?'text-decoration:line-through;':''}">${escapeHTML(t.title)}${t.note?` <span style="color:var(--ink-soft);font-weight:400">・ ${escapeHTML(t.note)}</span>`:''}</div>
+        <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
+      </div>`).join('');
+
+  return `
+    <div class="cal-card">
+      <div class="cal-nav">
+        <button onclick="changeMonth(-1)">◀</button>
+        <div class="cal-month">${monthCursor.getFullYear()}年${monthCursor.getMonth()+1}月</div>
+        <button onclick="changeMonth(1)">▶</button>
+      </div>
+      <div class="cal-weekdays">${WD.map(w=>`<div>${w}</div>`).join('')}</div>
+      <div class="cal-grid">${gridHTML}</div>
+    </div>
+    <div class="sel-day-header">
+      <div class="sel-day-label">${formatJP(selectedDate)}の予定</div>
+      <button class="add-here-btn" onclick="openAddSheet('${selectedDate}')">＋ この日に追加</button>
+    </div>
+    <div class="sel-list">${selListHTML}</div>
+  `;
+}
+
+function changeMonth(delta){ monthCursor.setMonth(monthCursor.getMonth()+delta); renderMain(); }
+function selectDate(iso){ selectedDate = iso; renderMain(); }
+
+/* ---------------- 全体描画 ---------------- */
+function renderMain(){
+  document.getElementById('mainArea').innerHTML = view==='list' ? renderList() : renderCalendar();
+}
+function renderAll(){ renderHeader(); renderBriefing(); renderMain(); }
+
+function setView(v){
+  view = v;
+  document.getElementById('tabList').classList.toggle('active', v==='list');
+  document.getElementById('tabCal').classList.toggle('active', v==='calendar');
+  renderMain();
+}
+
+function escapeHTML(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ---------------- タスク操作 ---------------- */
+function toggleDone(id){ tasks = tasks.map(t=>t.id===id?{...t,done:!t.done}:t); saveTasks(); renderAll(); }
+function deleteTask(id){ tasks = tasks.filter(t=>t.id!==id); saveTasks(); renderAll(); }
+
+function addTask(title, dueDate, note){
+  tasks.push({ id: Date.now().toString(), title: title.trim(), dueDate: dueDate||'', note: note||'', done:false });
+  saveTasks();
+  renderAll();
+}
+
+/* ---------------- 追加シート ---------------- */
+function openAddSheet(dateISO){
+  presetDate = dateISO || null;
+  sheetMode = 'menu';
+  pending = null;
+  renderSheet();
+}
+function closeSheet(){
+  if (recognition) { try{ recognition.stop(); }catch(e){} }
+  listening = false; voiceTranscript='';
+  document.getElementById('sheetRoot').innerHTML = '';
+}
+
+function renderSheet(){
+  let body = '';
+  if (sheetMode === 'menu') {
+    body = `
+      <button class="menu-btn" onclick="sheetMode='text'; renderSheet();">📝 テキストで入力</button>
+      <label class="menu-btn" style="display:flex;">📷 カメラで撮る
+        <input type="file" accept="image/*" capture="environment" style="position:absolute;width:1px;height:1px;opacity:0;" onchange="handlePhotoFile(event)">
+      </label>
+      <label class="menu-btn" style="display:flex;">🖼 アルバムから選ぶ
+        <input type="file" accept="image/*" style="position:absolute;width:1px;height:1px;opacity:0;" onchange="handlePhotoFile(event)">
+      </label>
+      <button class="menu-btn" onclick="sheetMode='voice'; renderSheet();">🎙 声で伝える</button>
+    `;
+  } else if (sheetMode === 'photo-loading') {
+    body = `<div class="loading-center"><span class="spin">⏳</span><div style="margin-top:10px;font-size:13px;">写真を読み取っています…</div></div>`;
+  } else if (sheetMode === 'text') {
+    body = `
+      <textarea id="textInput" rows="4" placeholder="例）8/23までに資料を提出　来週金曜に歯医者　9/1 15時 打ち合わせ"></textarea>
+      <div id="textError"></div>
+      <button class="primary-btn" onclick="submitText()">読み取る</button>
+    `;
+  } else if (sheetMode === 'voice') {
+    body = `
+      <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
+      <div class="voice-status">${listening ? '聞いています…' : (voiceTranscript || 'タップして話しかけてください')}</div>
+      <div id="voiceError"></div>
+    `;
+  } else if (sheetMode === 'confirm' && pending) {
+    body = `
+      <div class="field"><div class="field-label">タイトル</div><input type="text" id="pTitle" value="${escapeHTML(pending.title)}"></div>
+      <div class="field"><div class="field-label">期限日</div><input type="date" id="pDate" value="${pending.dueDate||''}"></div>
+      <div class="field"><div class="field-label">メモ（任意）</div><input type="text" id="pNote" value="${escapeHTML(pending.note||'')}"></div>
+      <div id="confirmError"></div>
+      <button class="primary-btn" onclick="confirmSave()">✎ カレンダーに追加</button>
+    `;
+  }
+
+  document.getElementById('sheetRoot').innerHTML = `
+    <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
+      <div class="sheet">
+        <div class="sheet-head"><div class="sheet-title">予定を追加</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
+        ${body}
+      </div>
+    </div>`;
+}
+
+function submitText(){
+  const input = document.getElementById('textInput').value.trim();
+  if (!input) return;
+  const parsed = parseJapaneseDate(input, new Date());
+  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', note: parsed.note };
+  sheetMode = 'confirm';
+  renderSheet();
+}
+
+function handlePhotoFile(e){
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  sheetMode = 'photo-loading';
+  renderSheet();
+  if (!window.Tesseract) {
+    pending = { title: '新しい予定', dueDate: presetDate||'', note: '' };
+    sheetMode = 'confirm'; renderSheet();
+    return;
+  }
+  Tesseract.recognize(file, 'jpn+eng', {})
+    .then(({ data: { text } })=>{
+      const parsed = parseJapaneseDate(text || '', new Date());
+      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', note: parsed.note };
+      sheetMode = 'confirm'; renderSheet();
+    })
+    .catch(()=>{
+      pending = { title: '新しい予定', dueDate: presetDate||'', note: '' };
+      sheetMode = 'confirm'; renderSheet();
+    });
+}
+
+function toggleVoice(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { document.getElementById('voiceError').innerHTML = `<div class="error-line">この端末では音声入力に対応していません。</div>`; return; }
+  if (listening) { recognition.stop(); return; }
+  recognition = new SR();
+  recognition.lang = 'ja-JP';
+  recognition.interimResults = true;
+  recognition.continuous = false;
+  let finalText = '';
+  recognition.onresult = (ev)=>{
+    let interim = '';
+    for (let i=ev.resultIndex; i<ev.results.length; i++){
+      if (ev.results[i].isFinal) finalText += ev.results[i][0].transcript;
+      else interim += ev.results[i][0].transcript;
+    }
+    voiceTranscript = finalText + interim;
+    renderSheet();
+  };
+  recognition.onerror = ()=>{ listening=false; document.getElementById('voiceError').innerHTML = `<div class="error-line">音声を認識できませんでした。</div>`; };
+  recognition.onend = ()=>{
+    listening = false;
+    if (finalText.trim()) {
+      const parsed = parseJapaneseDate(finalText.trim(), new Date());
+      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', note: parsed.note };
+      sheetMode = 'confirm';
+    }
+    renderSheet();
+  };
+  voiceTranscript = '';
+  listening = true;
+  renderSheet();
+  recognition.start();
+}
+
+function confirmSave(){
+  const title = document.getElementById('pTitle').value.trim();
+  const dueDate = document.getElementById('pDate').value;
+  const note = document.getElementById('pNote').value.trim();
+  if (!title) { document.getElementById('confirmError').innerHTML = `<div class="error-line">タイトルを入力してください。</div>`; return; }
+  addTask(title, dueDate, note);
+  closeSheet();
+}
+
+/* ---------------- 初期化 ---------------- */
+renderAll();
+initialPull();
+</script>
+</body>
+</html>
