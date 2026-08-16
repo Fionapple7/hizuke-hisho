@@ -348,14 +348,20 @@ function parseJapaneseDate(rawText, base){
   }
 
   // 時刻
-  const tm = text.match(/(\d{1,2})時(\d{1,2}分)?/);
-  if (tm) { note = tm[0] + 'から'; title = title.replace(tm[0], ''); }
+  let time = '';
+  const tm = text.match(/(\d{1,2})時(?:(\d{1,2})分)?/);
+  if (tm) {
+    const hh = String(parseInt(tm[1],10)).padStart(2,'0');
+    const mm = tm[2] ? String(parseInt(tm[2],10)).padStart(2,'0') : '00';
+    time = `${hh}:${mm}`;
+    title = title.replace(tm[0], '');
+  }
 
   title = title.replace(/まで(に)?/g,'').replace(/[、,]/g,' ').replace(/^[のにへを\s]+/,'').replace(/[のにへを\s]+$/,'').trim();
   if (!title) title = '新しい予定';
   if (title.length > 40) title = title.slice(0,40);
 
-  return { title, dueDate, note };
+  return { title, dueDate, time, note };
 }
 
 /* ---------------- 描画: ヘッダー ---------------- */
@@ -434,7 +440,7 @@ function renderList(){
         <button class="check ${t.done?'done':''}" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>
         <div class="task-body">
           <div class="task-title ${t.done?'done':''}">${escapeHTML(t.title)}</div>
-          <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
+          <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
         </div>
         ${stampHTML}
         <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
@@ -477,13 +483,18 @@ function renderCalendar(){
     </button>`;
   }).join('');
 
-  const selTasks = (byDate[selectedDate]||[]).slice().sort((a,b)=>(a.done?1:0)-(b.done?1:0));
+  const selTasks = (byDate[selectedDate]||[]).slice().sort((a,b)=>{
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    return (a.time||'99:99').localeCompare(b.time||'99:99');
+  });
   const selListHTML = selTasks.length===0
     ? `<div style="font-size:13px;color:var(--ink-soft);padding:10px 2px;">予定はありません</div>`
     : selTasks.map(t=>`
       <div class="task-card" style="padding:10px 12px;${t.done?'opacity:0.55;':''}">
         <button class="check ${t.done?'done':''}" style="width:24px;height:24px;font-size:12px;" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>
-        <div style="flex:1;font-size:14px;font-weight:500;${t.done?'text-decoration:line-through;':''}">${escapeHTML(t.title)}${t.note?` <span style="color:var(--ink-soft);font-weight:400">・ ${escapeHTML(t.note)}</span>`:''}</div>
+        <div style="flex:1;">
+          <div style="font-size:14px;font-weight:500;${t.done?'text-decoration:line-through;':''}">${t.time?`<span style="color:var(--ink-soft);font-weight:600;margin-right:6px;">${t.time}</span>`:''}${escapeHTML(t.title)}${t.note?` <span style="color:var(--ink-soft);font-weight:400">・ ${escapeHTML(t.note)}</span>`:''}</div>
+        </div>
         <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
       </div>`).join('');
 
@@ -527,8 +538,8 @@ function escapeHTML(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':
 function toggleDone(id){ tasks = tasks.map(t=>t.id===id?{...t,done:!t.done}:t); saveTasks(); renderAll(); }
 function deleteTask(id){ tasks = tasks.filter(t=>t.id!==id); saveTasks(); renderAll(); }
 
-function addTask(title, dueDate, note){
-  tasks.push({ id: Date.now().toString(), title: title.trim(), dueDate: dueDate||'', note: note||'', done:false });
+function addTask(title, dueDate, time, note){
+  tasks.push({ id: Date.now().toString(), title: title.trim(), dueDate: dueDate||'', time: time||'', note: note||'', done:false });
   saveTasks();
   renderAll();
 }
@@ -577,7 +588,7 @@ function renderSheet(){
   } else if (sheetMode === 'voice') {
     body = `
       <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
-      <div class="voice-status">${listening ? '聞いています…' : (voiceTranscript || 'タップして話しかけてください')}</div>
+      <div class="voice-status">${listening ? '聞いています…（終わったらマイクをタップ）' : (voiceTranscript || 'タップして話しかけてください')}</div>
       <div id="voiceError"></div>
     `;
   } else if (sheetMode === 'talk') {
@@ -587,7 +598,7 @@ function renderSheet(){
         「歯医者を来週の水曜に追加して」のように話すと、予定として登録します。
       </div>
       <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
-      <div class="voice-status">${listening ? '聞いています…' : (voiceTranscript || 'タップして話しかけてください')}</div>
+      <div class="voice-status">${listening ? '聞いています…（終わったらマイクをタップ）' : (voiceTranscript || 'タップして話しかけてください')}</div>
       <div id="voiceError"></div>
     `;
   } else if (sheetMode === 'talk-result') {
@@ -599,6 +610,7 @@ function renderSheet(){
     body = `
       <div class="field"><div class="field-label">タイトル</div><input type="text" id="pTitle" value="${escapeHTML(pending.title)}"></div>
       <div class="field"><div class="field-label">期限日</div><input type="date" id="pDate" value="${pending.dueDate||''}"></div>
+      <div class="field"><div class="field-label">時間（任意）</div><input type="time" id="pTime" value="${pending.time||''}"></div>
       <div class="field"><div class="field-label">メモ（任意）</div><input type="text" id="pNote" value="${escapeHTML(pending.note||'')}"></div>
       <div id="confirmError"></div>
       <button class="primary-btn" onclick="confirmSave()">✎ カレンダーに追加</button>
@@ -618,7 +630,7 @@ function submitText(){
   const input = document.getElementById('textInput').value.trim();
   if (!input) return;
   const parsed = parseJapaneseDate(input, new Date());
-  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', note: parsed.note };
+  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -629,18 +641,18 @@ function handlePhotoFile(e){
   sheetMode = 'photo-loading';
   renderSheet();
   if (!window.Tesseract) {
-    pending = { title: '新しい予定', dueDate: presetDate||'', note: '' };
+    pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '' };
     sheetMode = 'confirm'; renderSheet();
     return;
   }
   Tesseract.recognize(file, 'jpn+eng', {})
     .then(({ data: { text } })=>{
       const parsed = parseJapaneseDate(text || '', new Date());
-      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', note: parsed.note };
+      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note };
       sheetMode = 'confirm'; renderSheet();
     })
     .catch(()=>{
-      pending = { title: '新しい予定', dueDate: presetDate||'', note: '' };
+      pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '' };
       sheetMode = 'confirm'; renderSheet();
     });
 }
@@ -652,7 +664,7 @@ function toggleVoice(){
   recognition = new SR();
   recognition.lang = 'ja-JP';
   recognition.interimResults = true;
-  recognition.continuous = false;
+  recognition.continuous = true;
   let finalText = '';
   recognition.onresult = (ev)=>{
     let interim = '';
@@ -672,7 +684,7 @@ function toggleVoice(){
         return;
       }
       const parsed = parseJapaneseDate(finalText.trim(), new Date());
-      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', note: parsed.note };
+      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note };
       sheetMode = 'confirm';
     }
     renderSheet();
@@ -686,18 +698,20 @@ function toggleVoice(){
 function confirmSave(){
   const title = document.getElementById('pTitle').value.trim();
   const dueDate = document.getElementById('pDate').value;
+  const time = document.getElementById('pTime').value;
   const note = document.getElementById('pNote').value.trim();
   if (!title) { document.getElementById('confirmError').innerHTML = `<div class="error-line">タイトルを入力してください。</div>`; return; }
-  addTask(title, dueDate, note);
+  addTask(title, dueDate, time, note);
   closeSheet();
 }
 
 /* ---------------- 話しかける（問い合わせ or 追加の自動判定） ---------------- */
 function buildScheduleSpeech(dueDate){
   const label = formatJP(dueDate);
-  const list = tasks.filter(t=>t.dueDate===dueDate && !t.done);
+  const list = tasks.filter(t=>t.dueDate===dueDate && !t.done).sort((a,b)=>(a.time||'99:99').localeCompare(b.time||'99:99'));
   if (list.length===0) return `${label}の予定は、登録されていません。`;
-  return `${label}は、${list.map(t=>t.title).join('、')}です。`;
+  const items = list.map(t => t.time ? `${t.time}に${t.title}` : t.title).join('、');
+  return `${label}は、${items}です。`;
 }
 
 function handleTalkIntent(text){
@@ -723,7 +737,7 @@ function handleTalkIntent(text){
       .replace(/お願い(します)?/g, '')
       .trim();
     if (!title) title = '新しい予定';
-    pending = { title, dueDate: parsed.dueDate || '', note: parsed.note };
+    pending = { title, dueDate: parsed.dueDate || '', time: parsed.time || '', note: parsed.note };
     sheetMode = 'confirm';
     renderSheet();
   }
