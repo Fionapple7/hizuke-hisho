@@ -117,10 +117,11 @@
 <div class="header">
   <div class="stamp-today"><div class="md" id="todayMD"></div><div class="wd" id="todayWD"></div></div>
   <div style="flex:1;">
-    <div class="app-name">ひづけ秘書</div>
+    <div class="app-name" id="appName">ひづけ秘書</div>
     <div class="today-label" id="todayLabel"></div>
   </div>
   <button id="syncBtn" onclick="openSyncSheet()" style="background:none;border:1px solid rgba(46,64,52,0.2);border-radius:20px;padding:6px 12px;font-size:12px;color:var(--ink-soft);cursor:pointer;font-family:inherit;white-space:nowrap;">🔗 未連携</button>
+  <button onclick="openSettingsSheet()" style="background:none;border:1px solid rgba(46,64,52,0.2);border-radius:50%;width:30px;height:30px;font-size:14px;color:var(--ink-soft);cursor:pointer;font-family:inherit;margin-left:6px;">⚙️</button>
 </div>
 
 <div class="tabs">
@@ -215,6 +216,74 @@ async function initialPull(){
   catch(e) { updateSyncBtn('error'); }
 }
 
+/* ---------------- アプリ内通知（開いたときのひと言）設定 ---------------- */
+function isNotifyEnabled(){
+  const v = localStorage.getItem('hizuke_notify_enabled');
+  return v === null ? true : v === '1';
+}
+function getNotifyTime(){ return localStorage.getItem('hizuke_notify_time') || '08:00'; }
+
+function openSettingsSheet(){ renderSettingsSheet(); }
+
+function renderSettingsSheet(){
+  const enabled = isNotifyEnabled();
+  const time = getNotifyTime();
+  const name = localStorage.getItem('hizuke_secretary_name') || '';
+  document.getElementById('sheetRoot').innerHTML = `
+    <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
+      <div class="sheet">
+        <div class="sheet-head"><div class="sheet-title">設定</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
+
+        <div class="field">
+          <div class="field-label">秘書の名前</div>
+          <input type="text" id="secretaryNameInput" value="${escapeHTML(name)}" placeholder="例）ミライ、たろう（空欄なら「秘書」）" onchange="setSecretaryName(this.value)">
+        </div>
+
+        <div style="font-size:12.5px;color:var(--ink-soft);margin:16px 0;line-height:1.6;">
+          以下は、<b>アプリを開いたときに</b>秘書がひと言添えて読み上げる機能の設定です。<br/>
+          スマホ自体が鳴る目覚ましを変えたい場合は、この画面ではなく私(Claude)にチャットで伝えてください。
+        </div>
+        <div class="field">
+          <div class="field-label">アプリを開いた時のひと言</div>
+          <div style="display:flex;gap:8px;">
+            <button class="tab-btn ${enabled?'active':''}" onclick="setNotifyEnabled(true)">オン</button>
+            <button class="tab-btn ${!enabled?'active':''}" onclick="setNotifyEnabled(false)">オフ</button>
+          </div>
+        </div>
+        <div class="field">
+          <div class="field-label">知らせる時間（この時間以降に開くと、自動で読み上げます）</div>
+          <input type="time" id="notifyTimeInput" value="${time}" onchange="setNotifyTime(this.value)" ${!enabled?'disabled':''}>
+        </div>
+      </div>
+    </div>`;
+}
+
+function setSecretaryName(v){
+  localStorage.setItem('hizuke_secretary_name', (v||'').trim());
+  renderHeader();
+}
+
+function setNotifyEnabled(v){
+  localStorage.setItem('hizuke_notify_enabled', v ? '1' : '0');
+  renderSettingsSheet();
+}
+function setNotifyTime(v){
+  localStorage.setItem('hizuke_notify_time', v || '08:00');
+  localStorage.removeItem('hizuke_notify_last_shown');
+}
+
+function maybeAutoNotify(){
+  if (!isNotifyEnabled()) return;
+  const time = getNotifyTime();
+  const now = new Date();
+  const nowHM = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+  const today = todayISO();
+  if (localStorage.getItem('hizuke_notify_last_shown') === today) return;
+  if (nowHM < time) return;
+  localStorage.setItem('hizuke_notify_last_shown', today);
+  speakBriefing();
+}
+
 function openSyncSheet(){
   document.getElementById('sheetRoot').innerHTML = `
     <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
@@ -268,6 +337,7 @@ let view = 'list';
 let monthCursor = new Date(); monthCursor.setDate(1); monthCursor.setHours(0,0,0,0);
 let selectedDate = todayISO();
 let presetDate = null;
+let editingTaskId = null;
 let sheetMode = 'menu';
 let pending = null;
 let recognition = null;
@@ -365,11 +435,17 @@ function parseJapaneseDate(rawText, base){
 }
 
 /* ---------------- 描画: ヘッダー ---------------- */
+function getSecretaryName(){
+  return (localStorage.getItem('hizuke_secretary_name') || '').trim() || '秘書';
+}
+
 function renderHeader(){
   const t = new Date();
   document.getElementById('todayMD').textContent = `${t.getMonth()+1}/${t.getDate()}`;
   document.getElementById('todayWD').textContent = `(${WD[t.getDay()]})`;
   document.getElementById('todayLabel').textContent = `${t.getFullYear()}年${t.getMonth()+1}月${t.getDate()}日`;
+  const name = getSecretaryName();
+  document.getElementById('appName').textContent = name === '秘書' ? 'ひづけ秘書' : `ひづけ秘書 ・ ${name}`;
 }
 
 /* ---------------- 描画: 秘書からの一言 ---------------- */
@@ -392,7 +468,7 @@ function renderBriefing(){
     ? `明日${tomorrowLabel}は、${dueTomorrow.map(x=>x.title).join('、')}があります。`
     : `明日${tomorrowLabel}は、今のところ締切の予定はありません。`;
 
-  window.__briefingText = `おはようございます、秘書です。${briefing} ${tomorrowLine}`;
+  window.__briefingText = `おはようございます、${getSecretaryName()}です。${briefing} ${tomorrowLine}`;
 
   document.getElementById('briefingArea').innerHTML = `
     <div class="briefing ${overdue.length>0?'overdue':''}">
@@ -443,6 +519,7 @@ function renderList(){
           <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
         </div>
         ${stampHTML}
+        <button class="del-btn" onclick="openEditSheet('${t.id}')" aria-label="編集" style="margin-right:-2px;">✏️</button>
         <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
       </div>`;
   }).join('')}</div>`;
@@ -495,6 +572,7 @@ function renderCalendar(){
         <div style="flex:1;">
           <div style="font-size:14px;font-weight:500;${t.done?'text-decoration:line-through;':''}">${t.time?`<span style="color:var(--ink-soft);font-weight:600;margin-right:6px;">${t.time}</span>`:''}${escapeHTML(t.title)}${t.note?` <span style="color:var(--ink-soft);font-weight:400">・ ${escapeHTML(t.note)}</span>`:''}</div>
         </div>
+        <button class="del-btn" onclick="openEditSheet('${t.id}')" aria-label="編集">✏️</button>
         <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
       </div>`).join('');
 
@@ -547,20 +625,32 @@ function addTask(title, dueDate, time, note){
 /* ---------------- 追加シート ---------------- */
 function openAddSheet(dateISO){
   presetDate = dateISO || null;
+  editingTaskId = null;
   sheetMode = 'menu';
   pending = null;
   renderSheet();
 }
 function openTalkSheet(){
   presetDate = null;
+  editingTaskId = null;
   pending = null;
   voiceTranscript = '';
   sheetMode = 'talk';
   renderSheet();
 }
+function openEditSheet(id){
+  const t = tasks.find(x=>x.id===id);
+  if (!t) return;
+  editingTaskId = id;
+  presetDate = null;
+  pending = { title: t.title, dueDate: t.dueDate || '', time: t.time || '', note: t.note || '' };
+  sheetMode = 'confirm';
+  renderSheet();
+}
 function closeSheet(){
   if (recognition) { try{ recognition.stop(); }catch(e){} }
   listening = false; voiceTranscript='';
+  editingTaskId = null;
   document.getElementById('sheetRoot').innerHTML = '';
 }
 
@@ -607,20 +697,27 @@ function renderSheet(){
       <button class="primary-btn" onclick="sheetMode='talk'; voiceTranscript=''; renderSheet();">🎙 もう一度話す</button>
     `;
   } else if (sheetMode === 'confirm' && pending) {
+    const isEdit = !!editingTaskId;
     body = `
       <div class="field"><div class="field-label">タイトル</div><input type="text" id="pTitle" value="${escapeHTML(pending.title)}"></div>
       <div class="field"><div class="field-label">期限日</div><input type="date" id="pDate" value="${pending.dueDate||''}"></div>
+      ${isEdit ? `
+      <div style="display:flex;gap:6px;margin:-6px 0 12px;">
+        <button type="button" onclick="bumpDate(1)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+1日</button>
+        <button type="button" onclick="bumpDate(3)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+3日</button>
+        <button type="button" onclick="bumpDate(7)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+1週間</button>
+      </div>` : ''}
       <div class="field"><div class="field-label">時間（任意）</div><input type="time" id="pTime" value="${pending.time||''}"></div>
       <div class="field"><div class="field-label">メモ（任意）</div><input type="text" id="pNote" value="${escapeHTML(pending.note||'')}"></div>
       <div id="confirmError"></div>
-      <button class="primary-btn" onclick="confirmSave()">✎ カレンダーに追加</button>
+      <button class="primary-btn" onclick="confirmSave()">${isEdit ? '✎ 変更を保存' : '✎ カレンダーに追加'}</button>
     `;
   }
 
   document.getElementById('sheetRoot').innerHTML = `
     <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
       <div class="sheet">
-        <div class="sheet-head"><div class="sheet-title">${sheetMode==='talk'||sheetMode==='talk-result' ? '秘書に話しかける' : '予定を追加'}</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
+        <div class="sheet-head"><div class="sheet-title">${sheetMode==='talk'||sheetMode==='talk-result' ? '秘書に話しかける' : (editingTaskId ? '予定を編集' : '予定を追加')}</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
         ${body}
       </div>
     </div>`;
@@ -695,13 +792,27 @@ function toggleVoice(){
   recognition.start();
 }
 
+function bumpDate(days){
+  const input = document.getElementById('pDate');
+  const base = input.value ? new Date(input.value + 'T00:00:00') : new Date();
+  base.setHours(0,0,0,0);
+  base.setDate(base.getDate() + days);
+  input.value = fmt(base);
+}
+
 function confirmSave(){
   const title = document.getElementById('pTitle').value.trim();
   const dueDate = document.getElementById('pDate').value;
   const time = document.getElementById('pTime').value;
   const note = document.getElementById('pNote').value.trim();
   if (!title) { document.getElementById('confirmError').innerHTML = `<div class="error-line">タイトルを入力してください。</div>`; return; }
-  addTask(title, dueDate, time, note);
+  if (editingTaskId) {
+    tasks = tasks.map(t => t.id === editingTaskId ? { ...t, title, dueDate, time, note } : t);
+    saveTasks();
+    renderAll();
+  } else {
+    addTask(title, dueDate, time, note);
+  }
   closeSheet();
 }
 
@@ -746,6 +857,8 @@ function handleTalkIntent(text){
 /* ---------------- 初期化 ---------------- */
 renderAll();
 initialPull();
+maybeAutoNotify();
+setInterval(maybeAutoNotify, 60000);
 </script>
 </body>
 </html>
