@@ -254,8 +254,23 @@ function renderSettingsSheet(){
           <div class="field-label">知らせる時間（この時間以降に開くと、自動で読み上げます）</div>
           <input type="time" id="notifyTimeInput" value="${time}" onchange="setNotifyTime(this.value)" ${!enabled?'disabled':''}>
         </div>
+        <div id="settingsSavedMsg"></div>
+        <button class="primary-btn" onclick="applySettings()">反映する</button>
       </div>
     </div>`;
+}
+
+function applySettings(){
+  const nameVal = document.getElementById('secretaryNameInput').value.trim();
+  localStorage.setItem('hizuke_secretary_name', nameVal);
+  const timeInput = document.getElementById('notifyTimeInput');
+  if (timeInput && timeInput.value) {
+    localStorage.setItem('hizuke_notify_time', timeInput.value);
+    localStorage.removeItem('hizuke_notify_last_shown');
+  }
+  renderHeader();
+  const msg = document.getElementById('settingsSavedMsg');
+  if (msg) msg.innerHTML = `<div style="color:var(--green);font-size:12.5px;margin-top:8px;">反映しました。</div>`;
 }
 
 function setSecretaryName(v){
