@@ -299,6 +299,34 @@ function maybeAutoNotify(){
   speakBriefing();
 }
 
+function fireTaskNotification(task){
+  const text = `${task.title}の時間ですよ！`;
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try { new Notification(`⏰ ${getSecretaryName()}より`, { body: text }); } catch(e){}
+  }
+  if (window.speechSynthesis) {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'ja-JP'; u.rate = 1.0;
+    window.speechSynthesis.speak(u);
+  }
+}
+
+function checkTaskNotifications(){
+  const now = new Date();
+  const nowHM = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+  const today = todayISO();
+  let changed = false;
+  tasks.forEach(t=>{
+    if (!t.notify || t.done || !t.time || t.dueDate !== today) return;
+    if (t.lastNotifiedDate === today) return;
+    if (nowHM < t.time) return;
+    fireTaskNotification(t);
+    t.lastNotifiedDate = today;
+    changed = true;
+  });
+  if (changed) saveTasks();
+}
+
 function openSyncSheet(){
   document.getElementById('sheetRoot').innerHTML = `
     <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
@@ -531,7 +559,7 @@ function renderList(){
         <button class="check ${t.done?'done':''}" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>
         <div class="task-body">
           <div class="task-title ${t.done?'done':''}">${escapeHTML(t.title)}</div>
-          <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
+          <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.notify?' 🔔':''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
         </div>
         ${stampHTML}
         <button class="del-btn" onclick="openEditSheet('${t.id}')" aria-label="編集" style="margin-right:-2px;">✏️</button>
@@ -631,8 +659,8 @@ function escapeHTML(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':
 function toggleDone(id){ tasks = tasks.map(t=>t.id===id?{...t,done:!t.done}:t); saveTasks(); renderAll(); }
 function deleteTask(id){ tasks = tasks.filter(t=>t.id!==id); saveTasks(); renderAll(); }
 
-function addTask(title, dueDate, time, note){
-  tasks.push({ id: Date.now().toString(), title: title.trim(), dueDate: dueDate||'', time: time||'', note: note||'', done:false });
+function addTask(title, dueDate, time, note, notify){
+  tasks.push({ id: Date.now().toString(), title: title.trim(), dueDate: dueDate||'', time: time||'', note: note||'', done:false, notify: !!notify, lastNotifiedDate: '' });
   saveTasks();
   renderAll();
 }
@@ -658,7 +686,7 @@ function openEditSheet(id){
   if (!t) return;
   editingTaskId = id;
   presetDate = null;
-  pending = { title: t.title, dueDate: t.dueDate || '', time: t.time || '', note: t.note || '' };
+  pending = { title: t.title, dueDate: t.dueDate || '', time: t.time || '', note: t.note || '', notify: !!t.notify };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -722,7 +750,15 @@ function renderSheet(){
         <button type="button" onclick="bumpDate(3)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+3日</button>
         <button type="button" onclick="bumpDate(7)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+1週間</button>
       </div>` : ''}
-      <div class="field"><div class="field-label">時間（任意）</div><input type="time" id="pTime" value="${pending.time||''}"></div>
+      <div class="field"><div class="field-label">時間（任意）</div><input type="time" id="pTime" value="${pending.time||''}" onchange="toggleNotifyFieldVisibility()"></div>
+      <div class="field" id="pNotifyField" style="display:${pending.time?'block':'none'};">
+        <div class="field-label">この時間になったら通知する</div>
+        <div style="display:flex;gap:8px;">
+          <button type="button" class="tab-btn ${pending.notify?'active':''}" onclick="setPendingNotify(true)">オン</button>
+          <button type="button" class="tab-btn ${!pending.notify?'active':''}" onclick="setPendingNotify(false)">オフ</button>
+        </div>
+        <input type="hidden" id="pNotify" value="${pending.notify?'1':'0'}">
+      </div>
       <div class="field"><div class="field-label">メモ（任意）</div><input type="text" id="pNote" value="${escapeHTML(pending.note||'')}"></div>
       <div id="confirmError"></div>
       <button class="primary-btn" onclick="confirmSave()">${isEdit ? '✎ 変更を保存' : '✎ カレンダーに追加'}</button>
@@ -742,7 +778,7 @@ function submitText(){
   const input = document.getElementById('textInput').value.trim();
   if (!input) return;
   const parsed = parseJapaneseDate(input, new Date());
-  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note };
+  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -753,18 +789,18 @@ function handlePhotoFile(e){
   sheetMode = 'photo-loading';
   renderSheet();
   if (!window.Tesseract) {
-    pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '' };
+    pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '', notify: false };
     sheetMode = 'confirm'; renderSheet();
     return;
   }
   Tesseract.recognize(file, 'jpn+eng', {})
     .then(({ data: { text } })=>{
       const parsed = parseJapaneseDate(text || '', new Date());
-      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note };
+      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
       sheetMode = 'confirm'; renderSheet();
     })
     .catch(()=>{
-      pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '' };
+      pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '', notify: false };
       sheetMode = 'confirm'; renderSheet();
     });
 }
@@ -796,7 +832,7 @@ function toggleVoice(){
         return;
       }
       const parsed = parseJapaneseDate(finalText.trim(), new Date());
-      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note };
+      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
       sheetMode = 'confirm';
     }
     renderSheet();
@@ -815,18 +851,44 @@ function bumpDate(days){
   input.value = fmt(base);
 }
 
+function toggleNotifyFieldVisibility(){
+  const timeVal = document.getElementById('pTime').value;
+  const field = document.getElementById('pNotifyField');
+  if (field) field.style.display = timeVal ? 'block' : 'none';
+  if (!timeVal) { const h = document.getElementById('pNotify'); if (h) h.value = '0'; renderNotifyButtons(false); }
+}
+
+function renderNotifyButtons(on){
+  const field = document.getElementById('pNotifyField');
+  if (!field) return;
+  const btns = field.querySelectorAll('.tab-btn');
+  if (btns[0]) btns[0].classList.toggle('active', on);
+  if (btns[1]) btns[1].classList.toggle('active', !on);
+}
+
+function setPendingNotify(on){
+  if (on && 'Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+  const h = document.getElementById('pNotify');
+  if (h) h.value = on ? '1' : '0';
+  renderNotifyButtons(on);
+}
+
 function confirmSave(){
   const title = document.getElementById('pTitle').value.trim();
   const dueDate = document.getElementById('pDate').value;
   const time = document.getElementById('pTime').value;
   const note = document.getElementById('pNote').value.trim();
+  const notifyEl = document.getElementById('pNotify');
+  const notify = !!(time && notifyEl && notifyEl.value === '1');
   if (!title) { document.getElementById('confirmError').innerHTML = `<div class="error-line">タイトルを入力してください。</div>`; return; }
   if (editingTaskId) {
-    tasks = tasks.map(t => t.id === editingTaskId ? { ...t, title, dueDate, time, note } : t);
+    tasks = tasks.map(t => t.id === editingTaskId ? { ...t, title, dueDate, time, note, notify, lastNotifiedDate: (t.time!==time || t.dueDate!==dueDate) ? '' : t.lastNotifiedDate } : t);
     saveTasks();
     renderAll();
   } else {
-    addTask(title, dueDate, time, note);
+    addTask(title, dueDate, time, note, notify);
   }
   closeSheet();
 }
@@ -863,7 +925,7 @@ function handleTalkIntent(text){
       .replace(/お願い(します)?/g, '')
       .trim();
     if (!title) title = '新しい予定';
-    pending = { title, dueDate: parsed.dueDate || '', time: parsed.time || '', note: parsed.note };
+    pending = { title, dueDate: parsed.dueDate || '', time: parsed.time || '', note: parsed.note, notify: false };
     sheetMode = 'confirm';
     renderSheet();
   }
@@ -873,7 +935,8 @@ function handleTalkIntent(text){
 renderAll();
 initialPull();
 maybeAutoNotify();
-setInterval(maybeAutoNotify, 60000);
+checkTaskNotifications();
+setInterval(()=>{ maybeAutoNotify(); checkTaskNotifications(); }, 30000);
 </script>
 </body>
 </html>
