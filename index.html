@@ -108,6 +108,21 @@
   .footer-link{ text-align:center; margin-top:22px; }
   .footer-link a{ color:var(--ink-soft); font-size:12px; }
   .loading-center{ text-align:center; padding:40px; color:var(--ink-soft); }
+  .photo-preview{ width:100%; max-height:220px; object-fit:contain; border-radius:12px; background:var(--paper); margin-bottom:12px; }
+  .photo-tip{ font-size:12px; line-height:1.6; color:var(--ink-soft); margin:4px 2px 12px; }
+  .crop-wrap{ text-align:center; margin-bottom:12px; }
+  .crop-stage{ position:relative; display:inline-block; max-width:100%; overflow:hidden; border-radius:12px; line-height:0; background:#222; touch-action:none; }
+  .crop-image{ display:block; width:auto; height:auto; max-width:100%; max-height:46vh; user-select:none; -webkit-user-drag:none; }
+  .crop-box{ position:absolute; border:3px solid #fff; box-shadow:0 0 0 9999px rgba(0,0,0,.48); cursor:move; touch-action:none; }
+  .crop-handle{ position:absolute; width:26px; height:26px; border-radius:50%; background:var(--green); border:3px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.35); touch-action:none; }
+  .crop-handle.nw{ left:-14px; top:-14px; cursor:nwse-resize; }
+  .crop-handle.ne{ right:-14px; top:-14px; cursor:nesw-resize; }
+  .crop-handle.sw{ left:-14px; bottom:-14px; cursor:nesw-resize; }
+  .crop-handle.se{ right:-14px; bottom:-14px; cursor:nwse-resize; }
+  .crop-actions{ display:flex; gap:8px; }
+  .crop-actions button{ margin-top:0; }
+  .progress-track{ height:7px; overflow:hidden; border-radius:10px; background:rgba(113,137,122,0.2); margin-top:14px; }
+  .progress-bar{ height:100%; width:0; background:var(--green); transition:width .2s ease; }
   .spin{ display:inline-block; animation:spin 1s linear infinite; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
 </style>
@@ -386,6 +401,12 @@ let pending = null;
 let recognition = null;
 let listening = false;
 let voiceTranscript = '';
+let photoText = '';
+let photoPreviewURL = '';
+let photoFile = null;
+let cropRect = { x:0.04, y:0.04, w:0.92, h:0.92 };
+let activeCropDrag = null;
+let photoRequestId = 0;
 
 const WD = ['日','月','火','水','木','金','土'];
 
@@ -671,6 +692,7 @@ function openAddSheet(dateISO){
   editingTaskId = null;
   sheetMode = 'menu';
   pending = null;
+  clearPhotoState();
   renderSheet();
 }
 function openTalkSheet(){
@@ -694,7 +716,18 @@ function closeSheet(){
   if (recognition) { try{ recognition.stop(); }catch(e){} }
   listening = false; voiceTranscript='';
   editingTaskId = null;
+  clearPhotoState();
   document.getElementById('sheetRoot').innerHTML = '';
+}
+
+function clearPhotoState(){
+  photoRequestId++;
+  if (photoPreviewURL) URL.revokeObjectURL(photoPreviewURL);
+  photoPreviewURL = '';
+  photoText = '';
+  photoFile = null;
+  cropRect = { x:0.04, y:0.04, w:0.92, h:0.92 };
+  activeCropDrag = null;
 }
 
 function renderSheet(){
@@ -708,10 +741,46 @@ function renderSheet(){
       <label class="menu-btn" style="display:flex;">🖼 アルバムから選ぶ
         <input type="file" accept="image/*" style="position:absolute;width:1px;height:1px;opacity:0;" onchange="handlePhotoFile(event)">
       </label>
+      <div class="photo-tip">紙を明るい場所に置き、日付と予定名をまっすぐ大きく写すと読み取りやすくなります。</div>
       <button class="menu-btn" onclick="sheetMode='voice'; renderSheet();">🎙 声で伝える</button>
     `;
+  } else if (sheetMode === 'photo-crop') {
+    body = `
+      <div class="crop-wrap">
+        <div class="crop-stage" id="cropStage">
+          <img class="crop-image" id="cropImage" src="${photoPreviewURL}" alt="切り抜く写真" onload="updateCropBox()">
+          <div class="crop-box" id="cropBox" onpointerdown="beginCropDrag(event, 'move')">
+            <span class="crop-handle nw" onpointerdown="beginCropDrag(event, 'nw')"></span>
+            <span class="crop-handle ne" onpointerdown="beginCropDrag(event, 'ne')"></span>
+            <span class="crop-handle sw" onpointerdown="beginCropDrag(event, 'sw')"></span>
+            <span class="crop-handle se" onpointerdown="beginCropDrag(event, 'se')"></span>
+          </div>
+        </div>
+      </div>
+      <div class="photo-tip">白い枠の四隅を動かし、日付と予定名だけを囲んでください。余分な文字を外すと精度が上がります。</div>
+      <div class="crop-actions">
+        <button class="menu-btn" style="justify-content:center;flex:1;" onclick="resetCrop()">写真全体</button>
+        <button class="primary-btn" style="flex:2;" onclick="startPhotoOCR()">この範囲を読み取る</button>
+      </div>
+    `;
   } else if (sheetMode === 'photo-loading') {
-    body = `<div class="loading-center"><span class="spin">⏳</span><div style="margin-top:10px;font-size:13px;">写真を読み取っています…</div></div>`;
+    body = `<div class="loading-center">
+      <span class="spin">⏳</span>
+      <div id="photoProgressText" style="margin-top:10px;font-size:13px;">写真を見やすく整えています…</div>
+      <div class="progress-track"><div class="progress-bar" id="photoProgressBar"></div></div>
+    </div>`;
+  } else if (sheetMode === 'photo-review') {
+    body = `
+      ${photoPreviewURL ? `<img class="photo-preview" src="${photoPreviewURL}" alt="読み取った写真">` : ''}
+      <div class="field">
+        <div class="field-label">写真から読み取った文字（間違いがあれば直せます）</div>
+        <textarea id="photoTextInput" rows="6" placeholder="文字を読み取れませんでした。予定を直接入力してください。">${escapeHTML(photoText)}</textarea>
+      </div>
+      <div class="photo-tip">日付と予定名が入っていることを確認してから、次へ進んでください。</div>
+      <div id="photoError"></div>
+      <button class="primary-btn" onclick="submitPhotoText()">日付と予定を読み取る</button>
+      <button class="menu-btn" style="justify-content:center;margin-top:10px;" onclick="clearPhotoState(); sheetMode='menu'; renderSheet();">撮り直す・別の写真を選ぶ</button>
+    `;
   } else if (sheetMode === 'text') {
     body = `
       <textarea id="textInput" rows="4" placeholder="例）8/23までに資料を提出　来週金曜に歯医者　9/1 15時 打ち合わせ"></textarea>
@@ -786,23 +855,172 @@ function submitText(){
 function handlePhotoFile(e){
   const file = e.target.files && e.target.files[0];
   if (!file) return;
+  clearPhotoState();
+  photoFile = file;
+  photoPreviewURL = URL.createObjectURL(file);
+  sheetMode = 'photo-crop';
+  renderSheet();
+}
+
+function resetCrop(){
+  cropRect = { x:0, y:0, w:1, h:1 };
+  updateCropBox();
+}
+
+function updateCropBox(){
+  const box = document.getElementById('cropBox');
+  if (!box) return;
+  box.style.left = `${cropRect.x * 100}%`;
+  box.style.top = `${cropRect.y * 100}%`;
+  box.style.width = `${cropRect.w * 100}%`;
+  box.style.height = `${cropRect.h * 100}%`;
+}
+
+function beginCropDrag(e, mode){
+  e.preventDefault();
+  e.stopPropagation();
+  const stage = document.getElementById('cropStage');
+  if (!stage) return;
+  activeCropDrag = { mode, startX:e.clientX, startY:e.clientY, start:{...cropRect}, stage };
+  e.currentTarget.setPointerCapture(e.pointerId);
+  e.currentTarget.onpointermove = moveCropDrag;
+  e.currentTarget.onpointerup = endCropDrag;
+  e.currentTarget.onpointercancel = endCropDrag;
+}
+
+function moveCropDrag(e){
+  if (!activeCropDrag) return;
+  e.preventDefault();
+  const bounds = activeCropDrag.stage.getBoundingClientRect();
+  const dx = (e.clientX - activeCropDrag.startX) / bounds.width;
+  const dy = (e.clientY - activeCropDrag.startY) / bounds.height;
+  const s = activeCropDrag.start;
+  const min = 0.12;
+  let left = s.x, top = s.y, right = s.x + s.w, bottom = s.y + s.h;
+
+  if (activeCropDrag.mode === 'move') {
+    left = Math.max(0, Math.min(1 - s.w, s.x + dx));
+    top = Math.max(0, Math.min(1 - s.h, s.y + dy));
+    right = left + s.w;
+    bottom = top + s.h;
+  } else {
+    if (activeCropDrag.mode.includes('w')) left = Math.max(0, Math.min(right - min, s.x + dx));
+    if (activeCropDrag.mode.includes('e')) right = Math.min(1, Math.max(left + min, s.x + s.w + dx));
+    if (activeCropDrag.mode.includes('n')) top = Math.max(0, Math.min(bottom - min, s.y + dy));
+    if (activeCropDrag.mode.includes('s')) bottom = Math.min(1, Math.max(top + min, s.y + s.h + dy));
+  }
+  cropRect = { x:left, y:top, w:right-left, h:bottom-top };
+  updateCropBox();
+}
+
+function endCropDrag(e){
+  if (e && e.currentTarget) {
+    e.currentTarget.onpointermove = null;
+    e.currentTarget.onpointerup = null;
+    e.currentTarget.onpointercancel = null;
+  }
+  activeCropDrag = null;
+}
+
+function startPhotoOCR(){
+  if (!photoFile) return;
+  const requestId = ++photoRequestId;
   sheetMode = 'photo-loading';
   renderSheet();
   if (!window.Tesseract) {
-    pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '', notify: false };
-    sheetMode = 'confirm'; renderSheet();
+    photoText = '';
+    sheetMode = 'photo-review'; renderSheet();
     return;
   }
-  Tesseract.recognize(file, 'jpn+eng', {})
+  prepareImageForOCR(photoFile, cropRect)
+    .then(image => Tesseract.recognize(image, 'jpn+eng', { logger: updatePhotoProgress }))
     .then(({ data: { text } })=>{
-      const parsed = parseJapaneseDate(text || '', new Date());
-      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
-      sheetMode = 'confirm'; renderSheet();
+      if (requestId !== photoRequestId) return;
+      photoText = (text || '').replace(/\n{3,}/g, '\n\n').trim();
+      sheetMode = 'photo-review'; renderSheet();
     })
     .catch(()=>{
-      pending = { title: '新しい予定', dueDate: presetDate||'', time: '', note: '', notify: false };
-      sheetMode = 'confirm'; renderSheet();
+      if (requestId !== photoRequestId) return;
+      photoText = '';
+      sheetMode = 'photo-review'; renderSheet();
     });
+}
+
+function updatePhotoProgress(message){
+  if (!message || sheetMode !== 'photo-loading') return;
+  const pct = Math.round((message.progress || 0) * 100);
+  const labels = {
+    'loading tesseract core': '読み取り機能を準備しています…',
+    'initializing tesseract': '読み取り機能を準備しています…',
+    'loading language traineddata': '日本語を準備しています…',
+    'initializing api': '写真を確認しています…',
+    'recognizing text': `文字を読み取っています… ${pct}%`
+  };
+  const textEl = document.getElementById('photoProgressText');
+  const barEl = document.getElementById('photoProgressBar');
+  if (textEl) textEl.textContent = labels[message.status] || '写真を読み取っています…';
+  if (barEl && message.status === 'recognizing text') barEl.style.width = `${pct}%`;
+}
+
+async function prepareImageForOCR(file, crop){
+  let source;
+  let release = ()=>{};
+  if (window.createImageBitmap) {
+    try { source = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+    catch(e) { try { source = await createImageBitmap(file); } catch(ignore){} }
+  }
+  if (!source) {
+    const tempURL = URL.createObjectURL(file);
+    source = await new Promise((resolve, reject)=>{
+      const img = new Image();
+      img.onload = ()=>resolve(img);
+      img.onerror = reject;
+      img.src = tempURL;
+    });
+    release = ()=>URL.revokeObjectURL(tempURL);
+  } else if (source.close) {
+    release = ()=>source.close();
+  }
+  const maxSide = 2200;
+  const sourceWidth = source.naturalWidth || source.width;
+  const sourceHeight = source.naturalHeight || source.height;
+  const sx = Math.round(sourceWidth * crop.x);
+  const sy = Math.round(sourceHeight * crop.y);
+  const sw = Math.max(1, Math.round(sourceWidth * crop.w));
+  const sh = Math.max(1, Math.round(sourceHeight * crop.h));
+  const scale = Math.min(2, maxSide / Math.max(sw, sh));
+  const width = Math.max(1, Math.round(sw * scale));
+  const height = Math.max(1, Math.round(sh * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
+  release();
+
+  const image = ctx.getImageData(0, 0, width, height);
+  const data = image.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
+    data[i] = data[i + 1] = data[i + 2] = contrast;
+  }
+  ctx.putImageData(image, 0, 0);
+  return await new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('画像変換に失敗')), 'image/jpeg', 0.92));
+}
+
+function submitPhotoText(){
+  const input = document.getElementById('photoTextInput').value.trim();
+  if (!input) {
+    document.getElementById('photoError').innerHTML = `<div class="error-line">予定の文字を入力してください。</div>`;
+    return;
+  }
+  const parsed = parseJapaneseDate(input, new Date());
+  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
+  sheetMode = 'confirm';
+  renderSheet();
 }
 
 function toggleVoice(){
