@@ -123,6 +123,13 @@
   .crop-actions button{ margin-top:0; }
   .progress-track{ height:7px; overflow:hidden; border-radius:10px; background:rgba(113,137,122,0.2); margin-top:14px; }
   .progress-bar{ height:100%; width:0; background:var(--green); transition:width .2s ease; }
+  .toast{ position:fixed; left:50%; bottom:22px; transform:translateX(-50%); z-index:100; width:calc(100% - 32px); max-width:440px;
+    background:var(--ink); color:var(--card); border-radius:12px; padding:12px 14px; box-shadow:0 5px 18px rgba(0,0,0,.28); display:flex; align-items:center; gap:12px; font-size:13px; }
+  .toast span{ flex:1; }
+  .toast button{ border:none; background:var(--card); color:var(--ink); border-radius:18px; padding:7px 12px; font-family:inherit; font-weight:700; cursor:pointer; }
+  .group-title{ margin:16px 18px 7px; font-size:13px; font-weight:700; color:var(--ink-soft); display:flex; align-items:center; gap:6px; }
+  .quick-actions{ display:flex; gap:6px; margin-top:8px; }
+  .quick-actions button{ border:1px solid rgba(46,64,52,.2); background:var(--paper); color:var(--ink); border-radius:16px; padding:5px 9px; font:500 11px inherit; cursor:pointer; }
   .spin{ display:inline-block; animation:spin 1s linear infinite; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
 </style>
@@ -153,18 +160,67 @@
 <button class="fab" onclick="openAddSheet(null)">＋</button>
 
 <div id="sheetRoot"></div>
+<div id="toastRoot"></div>
 
 <script>
 /* ---------------- データ ---------------- */
 let tasks = [];
-try { tasks = JSON.parse(localStorage.getItem('hizuke_tasks') || '[]'); } catch(e){ tasks = []; }
-function saveTasks(){ localStorage.setItem('hizuke_tasks', JSON.stringify(tasks)); queuePush(); }
+let deletedTasks = {};
+try {
+  const saved = JSON.parse(localStorage.getItem('hizuke_tasks') || '[]');
+  tasks = Array.isArray(saved) ? saved.map(normalizeTask) : [];
+  deletedTasks = JSON.parse(localStorage.getItem('hizuke_deleted_tasks') || '{}') || {};
+} catch(e){ tasks = []; deletedTasks = {}; }
+
+function normalizeTask(task){
+  return { ...task, updatedAt: Number(task && task.updatedAt) || 0 };
+}
+
+function saveTasks(options={}){
+  localStorage.setItem('hizuke_tasks', JSON.stringify(tasks));
+  localStorage.setItem('hizuke_deleted_tasks', JSON.stringify(deletedTasks));
+  if (options.push !== false) queuePush();
+}
+
+function buildSyncPayload(){
+  return { version:2, tasks, deleted:deletedTasks, savedAt:Date.now() };
+}
+
+function createAutoBackup(reason){
+  let backups = [];
+  try { backups = JSON.parse(localStorage.getItem('hizuke_backups') || '[]'); } catch(e){}
+  backups.unshift({ version:2, reason, createdAt:Date.now(), tasks, deleted:deletedTasks });
+  localStorage.setItem('hizuke_backups', JSON.stringify(backups.slice(0, 5)));
+}
+
+function mergeSyncState(remote){
+  const remoteTasks = Array.isArray(remote) ? remote : (Array.isArray(remote.tasks) ? remote.tasks : []);
+  const remoteDeleted = Array.isArray(remote) ? {} : (remote.deleted || {});
+  const map = new Map(remoteTasks.map(t=>[String(t.id), normalizeTask(t)]));
+  tasks.forEach(localTask=>{
+    const id = String(localTask.id);
+    const remoteTask = map.get(id);
+    if (!remoteTask || localTask.updatedAt >= remoteTask.updatedAt) map.set(id, normalizeTask(localTask));
+  });
+  const mergedDeleted = { ...remoteDeleted };
+  Object.entries(deletedTasks).forEach(([id, at])=>{
+    mergedDeleted[id] = Math.max(Number(mergedDeleted[id]) || 0, Number(at) || 0);
+  });
+  for (const [id, deletedAt] of Object.entries(mergedDeleted)) {
+    const task = map.get(String(id));
+    if (task && Number(deletedAt) >= task.updatedAt) map.delete(String(id));
+  }
+  tasks = [...map.values()];
+  deletedTasks = mergedDeleted;
+  saveTasks({ push:false });
+}
 
 /* ---------------- GitHub Gist 同期 ---------------- */
 let ghToken = localStorage.getItem('hizuke_gh_token') || '';
 let ghGistId = localStorage.getItem('hizuke_gist_id') || '';
 let pushTimer = null;
 let syncing = false;
+let syncDirty = false;
 
 function ghHeaders(){ return { 'Authorization': `token ${ghToken}`, 'Accept': 'application/vnd.github+json' }; }
 
@@ -184,7 +240,7 @@ async function createGist(){
     body: JSON.stringify({
       description: 'ひづけ秘書 データ',
       public: false,
-      files: { 'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) } }
+      files: { 'hizuke-tasks.json': { content: JSON.stringify(buildSyncPayload(), null, 2) } }
     })
   });
   if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(`gist作成に失敗 (HTTP ${res.status}) ${t.slice(0,150)}`); }
@@ -198,28 +254,39 @@ async function pullFromGist(){
   const data = await res.json();
   const file = data.files && data.files['hizuke-tasks.json'];
   if (file && file.content) {
-    try { tasks = JSON.parse(file.content) || []; localStorage.setItem('hizuke_tasks', JSON.stringify(tasks)); } catch(e){}
+    const remote = JSON.parse(file.content);
+    createAutoBackup('同期前');
+    mergeSyncState(remote);
   }
 }
 
 async function pushToGist(){
   if (!ghToken || !ghGistId) return;
+  if (syncing) { syncDirty = true; return; }
+  syncDirty = false;
   syncing = true; updateSyncBtn('syncing');
   try {
+    await pullFromGist();
     const res = await fetch(`https://api.github.com/gists/${ghGistId}`, {
       method: 'PATCH',
       headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: { 'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) } } })
+      body: JSON.stringify({ files: { 'hizuke-tasks.json': { content: JSON.stringify(buildSyncPayload(), null, 2) } } })
     });
     if (!res.ok) throw new Error('保存に失敗 (HTTP ' + res.status + ')');
     updateSyncBtn('ok');
+    return true;
   } catch(e) {
     updateSyncBtn('error');
-  } finally { syncing = false; }
+    return false;
+  } finally {
+    syncing = false;
+    if (syncDirty) queuePush();
+  }
 }
 
 function queuePush(){
   if (!ghToken || !ghGistId) return;
+  syncDirty = true;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(pushToGist, 900);
 }
@@ -227,7 +294,7 @@ function queuePush(){
 async function initialPull(){
   if (!ghToken || !ghGistId) { updateSyncBtn(); return; }
   updateSyncBtn('syncing');
-  try { await pullFromGist(); updateSyncBtn('ok'); renderAll(); }
+  try { const ok = await pushToGist(); updateSyncBtn(ok ? 'ok' : 'error'); renderAll(); }
   catch(e) { updateSyncBtn('error'); }
 }
 
@@ -271,8 +338,76 @@ function renderSettingsSheet(){
         </div>
         <div id="settingsSavedMsg"></div>
         <button class="primary-btn" onclick="applySettings()">反映する</button>
+
+        <div style="border-top:1px solid rgba(46,64,52,.15);margin:22px 0 14px;padding-top:16px;">
+          <div style="font-weight:600;font-size:14px;margin-bottom:6px;">データのバックアップ</div>
+          <div class="photo-tip">予定をファイルに保存できます。機種変更や誤操作に備えて、ときどき保存してください。</div>
+          <button class="menu-btn" onclick="exportBackup()">⬇️ バックアップを書き出す</button>
+          <label class="menu-btn" style="display:flex;">⬆️ バックアップを読み込む
+            <input type="file" accept="application/json,.json" style="position:absolute;width:1px;height:1px;opacity:0;" onchange="importBackup(event)">
+          </label>
+          ${getLatestBackup() ? `<button class="menu-btn" onclick="restoreLatestBackup()">↩️ 同期前の状態に戻す</button>` : ''}
+        </div>
       </div>
     </div>`;
+}
+
+function getLatestBackup(){
+  try { return (JSON.parse(localStorage.getItem('hizuke_backups') || '[]') || [])[0] || null; }
+  catch(e){ return null; }
+}
+
+function exportBackup(){
+  const payload = { ...buildSyncPayload(), exportedAt:new Date().toISOString() };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `hizuke-hisho-backup-${todayISO()}.json`;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+
+async function importBackup(event){
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    const imported = Array.isArray(parsed) ? parsed : parsed.tasks;
+    if (!Array.isArray(imported)) throw new Error('予定データが見つかりません');
+    if (!confirm(`${imported.length}件の予定を読み込みます。現在の予定は残したまま統合します。`)) return;
+    createAutoBackup('読み込み前');
+    const now = Date.now();
+    const map = new Map(tasks.map(t=>[String(t.id), t]));
+    imported.forEach((task, i)=>{
+      if (!task || !task.id || typeof task.title !== 'string') return;
+      const restored = { ...normalizeTask(task), updatedAt:now + i };
+      map.set(String(restored.id), restored);
+      delete deletedTasks[String(restored.id)];
+    });
+    tasks = [...map.values()];
+    saveTasks();
+    renderAll();
+    renderSettingsSheet();
+    document.getElementById('settingsSavedMsg').innerHTML = `<div style="color:var(--green);font-size:12.5px;margin-top:8px;">バックアップを読み込みました。</div>`;
+  } catch(e) {
+    document.getElementById('settingsSavedMsg').innerHTML = `<div class="error-line">読み込めませんでした: ${escapeHTML(e.message || String(e))}</div>`;
+  } finally { event.target.value = ''; }
+}
+
+function restoreLatestBackup(){
+  const backup = getLatestBackup();
+  if (!backup || !Array.isArray(backup.tasks)) return;
+  if (!confirm('同期前の状態に戻しますか？ 現在の状態も自動的に退避します。')) return;
+  createAutoBackup('復元前');
+  const now = Date.now();
+  tasks = backup.tasks.map((task, i)=>({ ...normalizeTask(task), updatedAt:now + i }));
+  deletedTasks = { ...(backup.deleted || {}) };
+  tasks.forEach(t=>delete deletedTasks[String(t.id)]);
+  saveTasks();
+  closeSheet();
+  renderAll();
+  showToast('同期前の状態に戻しました');
 }
 
 function applySettings(){
@@ -337,6 +472,7 @@ function checkTaskNotifications(){
     if (nowHM < t.time) return;
     fireTaskNotification(t);
     t.lastNotifiedDate = today;
+    t.updatedAt = Date.now();
     changed = true;
   });
   if (changed) saveTasks();
@@ -378,7 +514,7 @@ async function connectSync(){
     if (gistIdInput) {
       ghGistId = gistIdInput;
       localStorage.setItem('hizuke_gist_id', ghGistId);
-      await pullFromGist();
+      if (!await pushToGist()) throw new Error('同期できませんでした');
     } else {
       ghGistId = await createGist();
       localStorage.setItem('hizuke_gist_id', ghGistId);
@@ -438,9 +574,11 @@ function parseJapaneseDate(rawText, base){
     if (m) {
       const month=parseInt(m[1],10), day=parseInt(m[2],10);
       let cand = new Date(b.getFullYear(), month-1, day);
-      if (cand < b) cand = new Date(b.getFullYear()+1, month-1, day);
-      dueDate = fmt(cand);
-      title = title.replace(m[0], '');
+      if (cand.getMonth()===month-1 && cand.getDate()===day) {
+        if (cand < b) cand = new Date(b.getFullYear()+1, month-1, day);
+        dueDate = fmt(cand);
+        title = title.replace(m[0], '');
+      }
     }
   }
 
@@ -558,39 +696,62 @@ function speakBriefing(){
 }
 
 /* ---------------- 描画: リスト ---------------- */
-function renderList(){
-  const sorted = [...tasks].sort((a,b)=>{
-    if (a.done !== b.done) return a.done ? 1 : -1;
-    if (!a.dueDate) return 1;
-    if (!b.dueDate) return -1;
-    return a.dueDate.localeCompare(b.dueDate);
-  });
+function renderTaskCard(t){
+  const diff = t.dueDate ? daysUntil(t.dueDate) : null;
+  const stampHTML = !t.done ? `
+    <div class="stamp-wrap">
+      <div class="stamp" style="width:50px;height:50px;border:2.5px solid ${stampColor(diff)};color:${stampColor(diff)};box-shadow:inset 0 0 0 3px var(--card), inset 0 0 0 4px ${stampColor(diff)}55;">
+        ${diff===null ? `<span style="font-size:11px">未定</span>` : diff<0 ? `<span style="font-size:16px">済</span>` : `<div><div style="font-size:17px">${diff}</div><div style="font-size:8px;font-family:'Noto Sans JP',sans-serif;font-weight:500">日後</div></div>`}
+      </div>
+      <div class="stamp-label" style="color:${stampColor(diff)}">${stampLabel(diff)}</div>
+    </div>` : '';
+  const quickActions = !t.done && diff !== null && diff <= 0 ? `
+    <div class="quick-actions">
+      ${diff < 0 ? `<button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',0)">今日へ</button>` : ''}
+      <button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',1)">明日へ</button>
+      <button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',7)">1週間後へ</button>
+    </div>` : '';
+  return `
+    <div class="task-card ${t.done?'done':''}">
+      <button class="check ${t.done?'done':''}" onclick="toggleDone('${t.id}')" aria-label="${t.done?'未完了に戻す':'完了にする'}">${t.done?'✓':''}</button>
+      <div class="task-body">
+        <div class="task-title ${t.done?'done':''}">${escapeHTML(t.title)}</div>
+        <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.notify?' 🔔':''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
+        ${quickActions}
+      </div>
+      ${stampHTML}
+      <button class="del-btn" onclick="openEditSheet('${t.id}')" aria-label="編集" style="margin-right:-2px;">✏️</button>
+      <button class="del-btn" onclick="deleteTask('${t.id}')" aria-label="削除">🗑</button>
+    </div>`;
+}
 
-  if (sorted.length === 0) {
+function renderList(){
+  if (tasks.length === 0) {
     return `<div class="list"><div class="empty">📅<br/><b>まだ予定がありません</b><br/><span style="font-size:13px">右下の＋から、テキスト・写真・声で追加できます</span></div></div>`;
   }
+  const sortTasks = list=>list.slice().sort((a,b)=>(a.dueDate||'9999').localeCompare(b.dueDate||'9999') || (a.time||'99:99').localeCompare(b.time||'99:99'));
+  const groups = [
+    { label:'⚠️ 期限切れ', items:sortTasks(tasks.filter(t=>!t.done && t.dueDate && daysUntil(t.dueDate)<0)) },
+    { label:'📌 今日', items:sortTasks(tasks.filter(t=>!t.done && t.dueDate && daysUntil(t.dueDate)===0)) },
+    { label:'🗓 今週', items:sortTasks(tasks.filter(t=>!t.done && t.dueDate && daysUntil(t.dueDate)>0 && daysUntil(t.dueDate)<=7)) },
+    { label:'🌿 あとで', items:sortTasks(tasks.filter(t=>!t.done && t.dueDate && daysUntil(t.dueDate)>7)) },
+    { label:'❓ 日付未定', items:tasks.filter(t=>!t.done && !t.dueDate) },
+    { label:'✓ 完了', items:sortTasks(tasks.filter(t=>t.done)) }
+  ];
+  return groups.filter(g=>g.items.length).map(g=>`
+    <div class="group-title">${g.label}<span style="font-weight:400;">${g.items.length}件</span></div>
+    <div class="list">${g.items.map(renderTaskCard).join('')}</div>
+  `).join('');
+}
 
-  return `<div class="list">${sorted.map(t=>{
-    const diff = t.dueDate ? daysUntil(t.dueDate) : null;
-    const stampHTML = !t.done ? `
-      <div class="stamp-wrap">
-        <div class="stamp" style="width:50px;height:50px;border:2.5px solid ${stampColor(diff)};color:${stampColor(diff)};box-shadow:inset 0 0 0 3px var(--card), inset 0 0 0 4px ${stampColor(diff)}55;">
-          ${diff===null ? `<span style="font-size:11px">未定</span>` : diff<0 ? `<span style="font-size:16px">済</span>` : `<div><div style="font-size:17px">${diff}</div><div style="font-size:8px;font-family:'Noto Sans JP',sans-serif;font-weight:500">日後</div></div>`}
-        </div>
-        <div class="stamp-label" style="color:${stampColor(diff)}">${stampLabel(diff)}</div>
-      </div>` : '';
-    return `
-      <div class="task-card ${t.done?'done':''}">
-        <button class="check ${t.done?'done':''}" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>
-        <div class="task-body">
-          <div class="task-title ${t.done?'done':''}">${escapeHTML(t.title)}</div>
-          <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.notify?' 🔔':''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
-        </div>
-        ${stampHTML}
-        <button class="del-btn" onclick="openEditSheet('${t.id}')" aria-label="編集" style="margin-right:-2px;">✏️</button>
-        <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
-      </div>`;
-  }).join('')}</div>`;
+function moveTaskToOffset(id, days){
+  const date = new Date();
+  date.setHours(0,0,0,0);
+  date.setDate(date.getDate() + days);
+  tasks = tasks.map(t=>t.id===id ? { ...t, dueDate:fmt(date), lastNotifiedDate:'', updatedAt:Date.now() } : t);
+  saveTasks();
+  renderAll();
+  showToast(days===0 ? '今日へ移動しました' : (days===1 ? '明日へ移動しました' : '1週間後へ移動しました'));
 }
 
 /* ---------------- 描画: カレンダー ---------------- */
@@ -681,11 +842,44 @@ function setView(v){
 function escapeHTML(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 /* ---------------- タスク操作 ---------------- */
-function toggleDone(id){ tasks = tasks.map(t=>t.id===id?{...t,done:!t.done}:t); saveTasks(); renderAll(); }
-function deleteTask(id){ tasks = tasks.filter(t=>t.id!==id); saveTasks(); renderAll(); }
+let undoDelete = null;
+let undoTimer = null;
+
+function toggleDone(id){ tasks = tasks.map(t=>t.id===id?{...t,done:!t.done,updatedAt:Date.now()}:t); saveTasks(); renderAll(); }
+function deleteTask(id){
+  const task = tasks.find(t=>t.id===id);
+  if (!task) return;
+  const deletedAt = Date.now();
+  undoDelete = { task, deletedAt };
+  deletedTasks[String(id)] = deletedAt;
+  tasks = tasks.filter(t=>t.id!==id);
+  saveTasks();
+  renderAll();
+  showToast(`「${task.title}」を削除しました`, '元に戻す', undoLastDelete, 8000);
+}
+
+function undoLastDelete(){
+  if (!undoDelete) return;
+  const task = { ...undoDelete.task, updatedAt:Date.now() };
+  delete deletedTasks[String(task.id)];
+  tasks.push(task);
+  undoDelete = null;
+  saveTasks();
+  renderAll();
+  showToast('予定を元に戻しました');
+}
+
+function showToast(message, actionLabel='', action=null, duration=3500){
+  clearTimeout(undoTimer);
+  const root = document.getElementById('toastRoot');
+  root.innerHTML = `<div class="toast"><span>${escapeHTML(message)}</span>${actionLabel?`<button id="toastAction">${escapeHTML(actionLabel)}</button>`:''}</div>`;
+  if (actionLabel && action) document.getElementById('toastAction').onclick = action;
+  undoTimer = setTimeout(()=>{ root.innerHTML=''; if (actionLabel) undoDelete=null; }, duration);
+}
 
 function addTask(title, dueDate, time, note, notify){
-  tasks.push({ id: Date.now().toString(), title: title.trim(), dueDate: dueDate||'', time: time||'', note: note||'', done:false, notify: !!notify, lastNotifiedDate: '' });
+  const now = Date.now();
+  tasks.push({ id: now.toString(), title: title.trim(), dueDate: dueDate||'', time: time||'', note: note||'', done:false, notify: !!notify, lastNotifiedDate: '', updatedAt:now });
   saveTasks();
   renderAll();
 }
@@ -841,13 +1035,14 @@ function renderSheet(){
     const isEdit = !!editingTaskId;
     body = `
       <div class="field"><div class="field-label">タイトル</div><input type="text" id="pTitle" value="${escapeHTML(pending.title)}"></div>
-      <div class="field"><div class="field-label">期限日</div><input type="date" id="pDate" value="${pending.dueDate||''}"></div>
-      ${isEdit ? `
-      <div style="display:flex;gap:6px;margin:-6px 0 12px;">
-        <button type="button" onclick="bumpDate(1)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+1日</button>
-        <button type="button" onclick="bumpDate(3)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+3日</button>
-        <button type="button" onclick="bumpDate(7)" style="flex:1;font-size:12px;padding:6px 0;border-radius:8px;border:1px solid rgba(46,64,52,0.2);background:var(--paper);color:var(--ink);cursor:pointer;">+1週間</button>
-      </div>` : ''}
+      <div class="field"><div class="field-label">期限日</div><input type="date" id="pDate" value="${pending.dueDate||''}" onchange="updateDateHint()"></div>
+      <div style="display:flex;gap:6px;margin:-6px 0 8px;flex-wrap:wrap;">
+        <button type="button" onclick="setPendingDateOffset(0)" class="tab-btn">今日</button>
+        <button type="button" onclick="setPendingDateOffset(1)" class="tab-btn">明日</button>
+        <button type="button" onclick="setPendingDateOffset(7)" class="tab-btn">1週間後</button>
+        <button type="button" onclick="clearPendingDate()" class="tab-btn">日付なし</button>
+      </div>
+      <div id="dateHint" class="photo-tip" style="margin-bottom:12px;"></div>
       <div class="field"><div class="field-label">時間（任意）</div><input type="time" id="pTime" value="${pending.time||''}" onchange="toggleNotifyFieldVisibility()"></div>
       <div class="field" id="pNotifyField" style="display:${pending.time?'block':'none'};">
         <div class="field-label">この時間になったら通知する</div>
@@ -870,6 +1065,7 @@ function renderSheet(){
         ${body}
       </div>
     </div>`;
+  if (sheetMode === 'confirm') updateDateHint();
 }
 
 function submitText(){
@@ -1182,6 +1378,35 @@ function bumpDate(days){
   base.setHours(0,0,0,0);
   base.setDate(base.getDate() + days);
   input.value = fmt(base);
+  updateDateHint();
+}
+
+function setPendingDateOffset(days){
+  const date = new Date();
+  date.setHours(0,0,0,0);
+  date.setDate(date.getDate() + days);
+  document.getElementById('pDate').value = fmt(date);
+  updateDateHint();
+}
+
+function clearPendingDate(){
+  document.getElementById('pDate').value = '';
+  updateDateHint();
+}
+
+function updateDateHint(){
+  const input = document.getElementById('pDate');
+  const hint = document.getElementById('dateHint');
+  if (!input || !hint) return;
+  if (!input.value) {
+    hint.textContent = '日付を決めずに保存します。';
+    hint.style.color = 'var(--ink-soft)';
+    return;
+  }
+  const diff = daysUntil(input.value);
+  const relative = diff < 0 ? `${Math.abs(diff)}日前（過去の日付）` : diff===0 ? '今日' : diff===1 ? '明日' : `あと${diff}日`;
+  hint.textContent = `${formatJP(input.value)} ・ ${relative}`;
+  hint.style.color = diff < 0 ? 'var(--urgent-dark)' : 'var(--green)';
 }
 
 function toggleNotifyFieldVisibility(){
@@ -1216,8 +1441,16 @@ function confirmSave(){
   const notifyEl = document.getElementById('pNotify');
   const notify = !!(time && notifyEl && notifyEl.value === '1');
   if (!title) { document.getElementById('confirmError').innerHTML = `<div class="error-line">タイトルを入力してください。</div>`; return; }
+  if (notify && !dueDate) { document.getElementById('confirmError').innerHTML = `<div class="error-line">通知する予定には日付も設定してください。</div>`; return; }
+  const original = editingTaskId ? tasks.find(t=>t.id===editingTaskId) : null;
+  if (dueDate && dueDate < todayISO() && (!original || original.dueDate !== dueDate)) {
+    if (!confirm(`${formatJP(dueDate)}は過去の日付です。このまま保存しますか？`)) return;
+  }
+  if (!editingTaskId && tasks.some(t=>!t.done && t.title===title && t.dueDate===dueDate && t.time===time)) {
+    if (!confirm('同じ予定がすでに登録されています。もう一件追加しますか？')) return;
+  }
   if (editingTaskId) {
-    tasks = tasks.map(t => t.id === editingTaskId ? { ...t, title, dueDate, time, note, notify, lastNotifiedDate: (t.time!==time || t.dueDate!==dueDate) ? '' : t.lastNotifiedDate } : t);
+    tasks = tasks.map(t => t.id === editingTaskId ? { ...t, title, dueDate, time, note, notify, updatedAt:Date.now(), lastNotifiedDate: (t.time!==time || t.dueDate!==dueDate) ? '' : t.lastNotifiedDate } : t);
     saveTasks();
     renderAll();
   } else {
