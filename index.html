@@ -402,6 +402,7 @@ let recognition = null;
 let listening = false;
 let voiceTranscript = '';
 let photoText = '';
+let photoCandidates = [];
 let photoPreviewURL = '';
 let photoFile = null;
 let cropRect = { x:0.04, y:0.04, w:0.92, h:0.92 };
@@ -725,6 +726,7 @@ function clearPhotoState(){
   if (photoPreviewURL) URL.revokeObjectURL(photoPreviewURL);
   photoPreviewURL = '';
   photoText = '';
+  photoCandidates = [];
   photoFile = null;
   cropRect = { x:0.04, y:0.04, w:0.92, h:0.92 };
   activeCropDrag = null;
@@ -772,6 +774,12 @@ function renderSheet(){
   } else if (sheetMode === 'photo-review') {
     body = `
       ${photoPreviewURL ? `<img class="photo-preview" src="${photoPreviewURL}" alt="読み取った写真">` : ''}
+      ${photoCandidates.length > 1 ? `<div class="field">
+        <div class="field-label">読み取り候補</div>
+        <div style="display:flex;gap:8px;">
+          ${photoCandidates.map((c, i)=>`<button type="button" class="tab-btn ${photoText===c.text?'active':''}" onclick="selectPhotoCandidate(${i})">候補${i+1}（${c.confidence}%）</button>`).join('')}
+        </div>
+      </div>` : ''}
       <div class="field">
         <div class="field-label">写真から読み取った文字（間違いがあれば直せます）</div>
         <textarea id="photoTextInput" rows="6" placeholder="文字を読み取れませんでした。予定を直接入力してください。">${escapeHTML(photoText)}</textarea>
@@ -922,7 +930,7 @@ function endCropDrag(e){
   activeCropDrag = null;
 }
 
-function startPhotoOCR(){
+async function startPhotoOCR(){
   if (!photoFile) return;
   const requestId = ++photoRequestId;
   sheetMode = 'photo-loading';
@@ -932,29 +940,76 @@ function startPhotoOCR(){
     sheetMode = 'photo-review'; renderSheet();
     return;
   }
-  prepareImageForOCR(photoFile, cropRect)
-    .then(image => Tesseract.recognize(image, 'jpn+eng', { logger: updatePhotoProgress }))
-    .then(({ data: { text } })=>{
-      if (requestId !== photoRequestId) return;
-      photoText = (text || '').replace(/\n{3,}/g, '\n\n').trim();
-      sheetMode = 'photo-review'; renderSheet();
-    })
-    .catch(()=>{
-      if (requestId !== photoRequestId) return;
-      photoText = '';
-      sheetMode = 'photo-review'; renderSheet();
+  let worker = null;
+  let pass = 0;
+  try {
+    const images = await prepareImageForOCR(photoFile, cropRect);
+    worker = await Tesseract.createWorker('jpn', 1, {
+      logger: message => updatePhotoProgress({ ...message, pass })
     });
+    await worker.setParameters({
+      tessedit_pageseg_mode: (Tesseract.PSM && Tesseract.PSM.SPARSE_TEXT) || '11',
+      preserve_interword_spaces: '1',
+      user_defined_dpi: '300'
+    });
+    pass = 1;
+    const colorResult = await worker.recognize(images.color);
+
+    await worker.setParameters({
+      tessedit_pageseg_mode: (Tesseract.PSM && Tesseract.PSM.SINGLE_BLOCK) || '6'
+    });
+    pass = 2;
+    const enhancedResult = await worker.recognize(images.enhanced);
+    if (requestId !== photoRequestId) return;
+
+    const candidates = [
+      makePhotoCandidate(colorResult.data, 'カラー'),
+      makePhotoCandidate(enhancedResult.data, '補正')
+    ].filter(c => c.text);
+    candidates.sort((a, b)=>b.score - a.score);
+    photoCandidates = candidates.filter((c, i, all)=>i===0 || c.text !== all[0].text);
+    photoText = photoCandidates[0] ? photoCandidates[0].text : '';
+    sheetMode = 'photo-review';
+    renderSheet();
+  } catch(e) {
+    if (requestId !== photoRequestId) return;
+    photoCandidates = [];
+    photoText = '';
+    sheetMode = 'photo-review';
+    renderSheet();
+  } finally {
+    if (worker) await worker.terminate().catch(()=>{});
+  }
+}
+
+function makePhotoCandidate(data, kind){
+  const text = (data.text || '').replace(/\n{3,}/g, '\n\n').trim();
+  const confidence = Math.max(0, Math.min(100, Math.round(data.confidence || 0)));
+  const chars = text.replace(/\s/g, '');
+  const japanese = (chars.match(/[ぁ-んァ-ヶ一-龠々ー]/g) || []).length;
+  const odd = (chars.match(/[�□]/g) || []).length;
+  const score = confidence + (chars.length ? japanese / chars.length * 18 : 0) - odd * 10;
+  return { text, confidence, score, kind };
+}
+
+function selectPhotoCandidate(index){
+  const candidate = photoCandidates[index];
+  if (!candidate) return;
+  photoText = candidate.text;
+  renderSheet();
 }
 
 function updatePhotoProgress(message){
   if (!message || sheetMode !== 'photo-loading') return;
-  const pct = Math.round((message.progress || 0) * 100);
+  const pass = message.pass || 0;
+  const rawProgress = message.progress || 0;
+  const pct = pass === 1 ? Math.round(rawProgress * 50) : (pass === 2 ? 50 + Math.round(rawProgress * 50) : 0);
   const labels = {
     'loading tesseract core': '読み取り機能を準備しています…',
     'initializing tesseract': '読み取り機能を準備しています…',
     'loading language traineddata': '日本語を準備しています…',
     'initializing api': '写真を確認しています…',
-    'recognizing text': `文字を読み取っています… ${pct}%`
+    'recognizing text': `2つの方法で読み取っています… ${pct}%`
   };
   const textEl = document.getElementById('photoProgressText');
   const barEl = document.getElementById('photoProgressBar');
@@ -1000,15 +1055,26 @@ async function prepareImageForOCR(file, crop){
   ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
   release();
 
+  const color = await canvasToBlob(canvas);
+
   const image = ctx.getImageData(0, 0, width, height);
   const data = image.data;
   for (let i = 0; i < data.length; i += 4) {
     const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-    const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.35 + 128));
+    const contrast = Math.max(0, Math.min(255, (gray - 128) * 1.12 + 128));
     data[i] = data[i + 1] = data[i + 2] = contrast;
   }
   ctx.putImageData(image, 0, 0);
-  return await new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('画像変換に失敗')), 'image/jpeg', 0.92));
+  const enhanced = await canvasToBlob(canvas);
+  return { color, enhanced };
+}
+
+function canvasToBlob(canvas){
+  return new Promise((resolve, reject) => canvas.toBlob(
+    blob => blob ? resolve(blob) : reject(new Error('画像変換に失敗')),
+    'image/jpeg',
+    0.94
+  ));
 }
 
 function submitPhotoText(){
