@@ -240,7 +240,10 @@ async function createGist(){
     body: JSON.stringify({
       description: 'ひづけ秘書 データ',
       public: false,
-      files: { 'hizuke-tasks.json': { content: JSON.stringify(buildSyncPayload(), null, 2) } }
+      files: {
+        'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) },
+        'hizuke-sync-meta.json': { content: JSON.stringify({ version:2, deleted:deletedTasks, savedAt:Date.now() }, null, 2) }
+      }
     })
   });
   if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(`gist作成に失敗 (HTTP ${res.status}) ${t.slice(0,150)}`); }
@@ -253,8 +256,12 @@ async function pullFromGist(){
   if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(`取得に失敗 (HTTP ${res.status}) ${t.slice(0,150)}`); }
   const data = await res.json();
   const file = data.files && data.files['hizuke-tasks.json'];
+  const metaFile = data.files && data.files['hizuke-sync-meta.json'];
   if (file && file.content) {
-    const remote = JSON.parse(file.content);
+    let remote = JSON.parse(file.content);
+    if (Array.isArray(remote) && metaFile && metaFile.content) {
+      try { remote = { ...JSON.parse(metaFile.content), tasks:remote }; } catch(e){}
+    }
     createAutoBackup('同期前');
     mergeSyncState(remote);
   }
@@ -270,7 +277,10 @@ async function pushToGist(){
     const res = await fetch(`https://api.github.com/gists/${ghGistId}`, {
       method: 'PATCH',
       headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ files: { 'hizuke-tasks.json': { content: JSON.stringify(buildSyncPayload(), null, 2) } } })
+      body: JSON.stringify({ files: {
+        'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) },
+        'hizuke-sync-meta.json': { content: JSON.stringify({ version:2, deleted:deletedTasks, savedAt:Date.now() }, null, 2) }
+      } })
     });
     if (!res.ok) throw new Error('保存に失敗 (HTTP ' + res.status + ')');
     updateSyncBtn('ok');
