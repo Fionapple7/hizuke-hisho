@@ -547,6 +547,10 @@ let pending = null;
 let recognition = null;
 let listening = false;
 let voiceTranscript = '';
+let voiceCandidates = [];
+let voiceOriginMode = 'voice';
+let voiceErrorMessage = '';
+let voiceRequestId = 0;
 let photoText = '';
 let photoCandidates = [];
 let photoNeedsManual = false;
@@ -566,8 +570,21 @@ function stampColor(diff){ if(diff===null) return 'var(--ink-soft)'; if(diff<0) 
 function stampLabel(diff){ if(diff===null) return '日付未定'; if(diff<0) return `期限切${Math.abs(diff)}日超過`; if(diff===0) return '本日締切'; return `あと${diff}日`; }
 
 /* ---------------- ルールベースの日本語日付パーサー ---------------- */
+function japaneseNumberValue(value){
+  const digits = { '〇':0, '一':1, '二':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9 };
+  if (value.includes('十')) {
+    const parts = value.split('十');
+    return (parts[0] ? digits[parts[0]] : 1) * 10 + (parts[1] ? digits[parts[1]] : 0);
+  }
+  return Number([...value].map(c=>digits[c]).join(''));
+}
+
 function parseJapaneseDate(rawText, base){
-  let text = (rawText || '').replace(/\s+/g,' ').trim();
+  let text = (rawText || '')
+    .replace(/[０-９]/g, c=>String(c.charCodeAt(0)-0xFF10))
+    .replace(/[〇一二三四五六七八九十]+(?=\s*[月日時分])/g, value=>String(japaneseNumberValue(value)))
+    .replace(/\s+/g,' ')
+    .trim();
   let title = text;
   let dueDate = null;
   let note = '';
@@ -633,10 +650,12 @@ function parseJapaneseDate(rawText, base){
 
   // 時刻
   let time = '';
-  const tm = text.match(/(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分?)?|(\d{1,2})\s*[:：]\s*(\d{1,2})/);
+  const tm = text.match(/(午前|午後)?\s*(?:(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分?)?|(\d{1,2})\s*[:：]\s*(\d{1,2}))/);
   if (tm) {
-    const hour = parseInt(tm[1] || tm[3], 10);
-    const minute = parseInt(tm[2] || tm[4] || '0', 10);
+    let hour = parseInt(tm[2] || tm[4], 10);
+    const minute = parseInt(tm[3] || tm[5] || '0', 10);
+    if (tm[1] === '午後' && hour < 12) hour += 12;
+    if (tm[1] === '午前' && hour === 12) hour = 0;
     if (hour <= 23 && minute <= 59) {
       time = `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`;
       title = title.replace(tm[0], '');
@@ -908,7 +927,18 @@ function openTalkSheet(){
   editingTaskId = null;
   pending = null;
   voiceTranscript = '';
+  voiceCandidates = [];
+  voiceErrorMessage = '';
+  voiceOriginMode = 'talk';
   sheetMode = 'talk';
+  renderSheet();
+}
+function openVoiceEntry(){
+  voiceTranscript = '';
+  voiceCandidates = [];
+  voiceErrorMessage = '';
+  voiceOriginMode = 'voice';
+  sheetMode = 'voice';
   renderSheet();
 }
 function openEditSheet(id){
@@ -921,8 +951,9 @@ function openEditSheet(id){
   renderSheet();
 }
 function closeSheet(){
+  voiceRequestId++;
   if (recognition) { try{ recognition.stop(); }catch(e){} }
-  listening = false; voiceTranscript='';
+  listening = false; voiceTranscript=''; voiceCandidates=[]; voiceErrorMessage='';
   editingTaskId = null;
   clearPhotoState();
   document.getElementById('sheetRoot').innerHTML = '';
@@ -952,7 +983,7 @@ function renderSheet(){
         <input type="file" accept="image/*" style="position:absolute;width:1px;height:1px;opacity:0;" onchange="handlePhotoFile(event)">
       </label>
       <div class="photo-tip">紙を明るい場所に置き、日付と予定名をまっすぐ大きく写すと読み取りやすくなります。</div>
-      <button class="menu-btn" onclick="sheetMode='voice'; renderSheet();">🎙 声で伝える</button>
+      <button class="menu-btn" onclick="openVoiceEntry()">🎙 声で伝える</button>
     `;
   } else if (sheetMode === 'photo-crop') {
     body = `
@@ -1022,9 +1053,10 @@ function renderSheet(){
     `;
   } else if (sheetMode === 'voice') {
     body = `
+      <div class="photo-tip">「歯医者、来週の水曜日、午後3時」のように、予定名・日付・時間の順で、ひと息でゆっくり話してください。</div>
       <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
-      <div class="voice-status">${listening ? '聞いています…（終わったらマイクをタップ）' : (voiceTranscript || 'タップして話しかけてください')}</div>
-      <div id="voiceError"></div>
+      <div class="voice-status">${listening ? `聞いています…<br><b>${escapeHTML(voiceTranscript)}</b>` : (voiceTranscript || 'タップして話しかけてください')}</div>
+      <div id="voiceError">${voiceErrorMessage?`<div class="error-line">${escapeHTML(voiceErrorMessage)}</div>`:''}</div>
     `;
   } else if (sheetMode === 'talk') {
     body = `
@@ -1033,8 +1065,22 @@ function renderSheet(){
         「歯医者を来週の水曜に追加して」のように話すと、予定として登録します。
       </div>
       <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
-      <div class="voice-status">${listening ? '聞いています…（終わったらマイクをタップ）' : (voiceTranscript || 'タップして話しかけてください')}</div>
-      <div id="voiceError"></div>
+      <div class="voice-status">${listening ? `聞いています…<br><b>${escapeHTML(voiceTranscript)}</b>` : (voiceTranscript || 'タップして話しかけてください')}</div>
+      <div id="voiceError">${voiceErrorMessage?`<div class="error-line">${escapeHTML(voiceErrorMessage)}</div>`:''}</div>
+    `;
+  } else if (sheetMode === 'voice-review') {
+    body = `
+      <div class="field">
+        <div class="field-label">こう聞こえました（間違いがあれば直せます）</div>
+        <textarea id="voiceTextInput" rows="5" placeholder="予定名、日付、時間を入力してください">${escapeHTML(voiceTranscript)}</textarea>
+      </div>
+      ${voiceCandidates.length > 1 ? `<div class="field">
+        <div class="field-label">別の聞き取り候補</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;">${voiceCandidates.map((text,i)=>`<button type="button" class="tab-btn ${text===voiceTranscript?'active':''}" onclick="selectVoiceCandidate(${i})">候補${i+1}</button>`).join('')}</div>
+      </div>` : ''}
+      <div id="voiceReviewError"></div>
+      <button class="primary-btn" onclick="submitVoiceTranscript()">日付と予定を確認する</button>
+      <button class="menu-btn" style="justify-content:center;margin-top:10px;" onclick="retryVoiceEntry()">🎙 もう一度話す</button>
     `;
   } else if (sheetMode === 'talk-result') {
     body = `
@@ -1071,7 +1117,7 @@ function renderSheet(){
   document.getElementById('sheetRoot').innerHTML = `
     <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
       <div class="sheet">
-        <div class="sheet-head"><div class="sheet-title">${sheetMode==='talk'||sheetMode==='talk-result' ? '秘書に話しかける' : (editingTaskId ? '予定を編集' : '予定を追加')}</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
+        <div class="sheet-head"><div class="sheet-title">${sheetMode==='talk'||sheetMode==='talk-result' ? '秘書に話しかける' : (sheetMode==='voice-review' ? '聞き取った内容を確認' : (editingTaskId ? '予定を編集' : '予定を追加'))}</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
         ${body}
       </div>
     </div>`;
@@ -1346,33 +1392,60 @@ function submitPhotoManual(){
 
 function toggleVoice(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { document.getElementById('voiceError').innerHTML = `<div class="error-line">この端末では音声入力に対応していません。</div>`; return; }
+  if (!SR) { voiceErrorMessage='この端末では音声入力に対応していません。文字入力をお使いください。'; renderSheet(); return; }
   if (listening) { recognition.stop(); return; }
+  voiceOriginMode = sheetMode === 'talk' ? 'talk' : 'voice';
+  voiceErrorMessage = '';
+  voiceCandidates = [];
   recognition = new SR();
+  const requestId = ++voiceRequestId;
   recognition.lang = 'ja-JP';
   recognition.interimResults = true;
-  recognition.continuous = true;
+  recognition.continuous = false;
+  recognition.maxAlternatives = 3;
+  try {
+    const GrammarList = window.SpeechGrammarList || window.webkitSpeechGrammarList;
+    if (GrammarList) {
+      const grammars = new GrammarList();
+      grammars.addFromString('#JSGF V1.0; grammar schedule; public <word> = 今日 | 明日 | 明後日 | 来週 | 月曜 | 火曜 | 水曜 | 木曜 | 金曜 | 土曜 | 日曜 | 午前 | 午後 | 時 | 分 | 予定 | 追加;', 1);
+      recognition.grammars = grammars;
+    }
+  } catch(e){}
   let finalText = '';
+  let alternatives = [];
   recognition.onresult = (ev)=>{
+    if (requestId !== voiceRequestId) return;
     let interim = '';
     for (let i=ev.resultIndex; i<ev.results.length; i++){
-      if (ev.results[i].isFinal) finalText += ev.results[i][0].transcript;
-      else interim += ev.results[i][0].transcript;
+      const result = ev.results[i];
+      if (result.isFinal) {
+        finalText += result[0].transcript;
+        alternatives = Array.from(result).map(a=>a.transcript.trim()).filter(Boolean);
+      } else interim += result[0].transcript;
     }
     voiceTranscript = finalText + interim;
     renderSheet();
   };
-  recognition.onerror = ()=>{ listening=false; document.getElementById('voiceError').innerHTML = `<div class="error-line">音声を認識できませんでした。</div>`; };
-  recognition.onend = ()=>{
+  recognition.onerror = (event)=>{
+    if (requestId !== voiceRequestId) return;
     listening = false;
+    voiceErrorMessage = event.error === 'not-allowed'
+      ? 'マイクの使用が許可されていません。ブラウザの設定をご確認ください。'
+      : 'うまく聞き取れませんでした。静かな場所でもう一度お試しください。';
+    renderSheet();
+  };
+  recognition.onend = ()=>{
+    if (requestId !== voiceRequestId) return;
+    listening = false;
+    recognition = null;
     if (finalText.trim()) {
-      if (sheetMode === 'talk') {
+      voiceCandidates = [...new Set([finalText.trim(), ...alternatives])].slice(0,3);
+      voiceTranscript = voiceCandidates[0];
+      if (voiceOriginMode === 'talk') {
         handleTalkIntent(finalText.trim());
         return;
       }
-      const parsed = parseJapaneseDate(finalText.trim(), new Date());
-      pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
-      sheetMode = 'confirm';
+      sheetMode = 'voice-review';
     }
     renderSheet();
   };
@@ -1380,6 +1453,38 @@ function toggleVoice(){
   listening = true;
   renderSheet();
   recognition.start();
+}
+
+function selectVoiceCandidate(index){
+  if (!voiceCandidates[index]) return;
+  voiceTranscript = voiceCandidates[index];
+  renderSheet();
+}
+
+function retryVoiceEntry(){
+  voiceTranscript = '';
+  voiceCandidates = [];
+  voiceErrorMessage = '';
+  sheetMode = voiceOriginMode;
+  renderSheet();
+}
+
+function submitVoiceTranscript(){
+  const input = document.getElementById('voiceTextInput').value.trim();
+  if (!input) {
+    document.getElementById('voiceReviewError').innerHTML = `<div class="error-line">聞き取った内容を入力してください。</div>`;
+    return;
+  }
+  const parsed = parseJapaneseDate(input, new Date());
+  let title = parsed.title
+    .replace(/予定を?(登録|追加)して?/g, '')
+    .replace(/(登録|追加)して?/g, '')
+    .replace(/お願い(します)?/g, '')
+    .trim();
+  if (!title) title = '新しい予定';
+  pending = { title, dueDate:parsed.dueDate || presetDate || '', time:parsed.time || '', note:parsed.note, notify:false };
+  sheetMode = 'confirm';
+  renderSheet();
 }
 
 function bumpDate(days){
@@ -1495,14 +1600,9 @@ function handleTalkIntent(text){
       window.speechSynthesis.speak(u);
     }
   } else {
-    let title = parsed.title
-      .replace(/予定を?(登録|追加)して?/g, '')
-      .replace(/(登録|追加)して?/g, '')
-      .replace(/お願い(します)?/g, '')
-      .trim();
-    if (!title) title = '新しい予定';
-    pending = { title, dueDate: parsed.dueDate || '', time: parsed.time || '', note: parsed.note, notify: false };
-    sheetMode = 'confirm';
+    voiceTranscript = text;
+    if (!voiceCandidates.length) voiceCandidates = [text];
+    sheetMode = 'voice-review';
     renderSheet();
   }
 }
