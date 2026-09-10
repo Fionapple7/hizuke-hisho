@@ -484,15 +484,17 @@ function parseJapaneseDate(rawText, base){
 
   // 時刻
   let time = '';
-  const tm = text.match(/(\d{1,2})時(?:(\d{1,2})分)?/);
+  const tm = text.match(/(\d{1,2})\s*時(?:\s*(\d{1,2})\s*分?)?|(\d{1,2})\s*[:：]\s*(\d{1,2})/);
   if (tm) {
-    const hh = String(parseInt(tm[1],10)).padStart(2,'0');
-    const mm = tm[2] ? String(parseInt(tm[2],10)).padStart(2,'0') : '00';
-    time = `${hh}:${mm}`;
-    title = title.replace(tm[0], '');
+    const hour = parseInt(tm[1] || tm[3], 10);
+    const minute = parseInt(tm[2] || tm[4] || '0', 10);
+    if (hour <= 23 && minute <= 59) {
+      time = `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`;
+      title = title.replace(tm[0], '');
+    }
   }
 
-  title = title.replace(/まで(に)?/g,'').replace(/[、,]/g,' ').replace(/^[のにへを\s]+/,'').replace(/[のにへを\s]+$/,'').trim();
+  title = title.replace(/[（(]\s*[日月火水木金土]\s*[)）]/g,'').replace(/まで(に)?/g,'').replace(/[、,]/g,' ').replace(/^[のにへを\s]+/,'').replace(/[のにへを\s]+$/,'').trim();
   if (!title) title = '新しい予定';
   if (title.length > 40) title = title.slice(0,40);
 
@@ -777,7 +779,7 @@ function renderSheet(){
       ${photoCandidates.length > 1 ? `<div class="field">
         <div class="field-label">読み取り候補</div>
         <div style="display:flex;gap:8px;">
-          ${photoCandidates.map((c, i)=>`<button type="button" class="tab-btn ${photoText===c.text?'active':''}" onclick="selectPhotoCandidate(${i})">候補${i+1}（${c.confidence}%）</button>`).join('')}
+          ${photoCandidates.map((c, i)=>`<button type="button" class="tab-btn ${photoText===c.text?'active':''}" onclick="selectPhotoCandidate(${i})">${escapeHTML(c.kind)}（${c.confidence}%）</button>`).join('')}
         </div>
       </div>` : ''}
       <div class="field">
@@ -960,14 +962,23 @@ async function startPhotoOCR(){
     });
     pass = 2;
     const enhancedResult = await worker.recognize(images.enhanced);
+
+    await worker.setParameters({
+      tessedit_pageseg_mode: (Tesseract.PSM && Tesseract.PSM.SINGLE_LINE) || '7',
+      tessedit_char_whitelist: '0123456789/:：.-()（）',
+      classify_bln_numeric_mode: '1'
+    });
+    pass = 3;
+    const numericResult = await worker.recognize(images.enhanced);
     if (requestId !== photoRequestId) return;
 
     const candidates = [
       makePhotoCandidate(colorResult.data, 'カラー'),
-      makePhotoCandidate(enhancedResult.data, '補正')
+      makePhotoCandidate(enhancedResult.data, '補正'),
+      makePhotoCandidate(numericResult.data, '日付・時刻')
     ].filter(c => c.text);
     candidates.sort((a, b)=>b.score - a.score);
-    photoCandidates = candidates.filter((c, i, all)=>i===0 || c.text !== all[0].text);
+    photoCandidates = candidates.filter((c, i, all)=>all.findIndex(x=>x.text===c.text)===i);
     photoText = photoCandidates[0] ? photoCandidates[0].text : '';
     sheetMode = 'photo-review';
     renderSheet();
@@ -988,7 +999,8 @@ function makePhotoCandidate(data, kind){
   const chars = text.replace(/\s/g, '');
   const japanese = (chars.match(/[ぁ-んァ-ヶ一-龠々ー]/g) || []).length;
   const odd = (chars.match(/[�□]/g) || []).length;
-  const score = confidence + (chars.length ? japanese / chars.length * 18 : 0) - odd * 10;
+  const dateTimeBonus = /\d{1,2}\D?\d{1,2}.*\d{1,2}\D?\d{2}/.test(chars) ? 25 : 0;
+  const score = confidence + (chars.length ? japanese / chars.length * 18 : 0) - odd * 10 + dateTimeBonus;
   return { text, confidence, score, kind };
 }
 
@@ -1003,13 +1015,15 @@ function updatePhotoProgress(message){
   if (!message || sheetMode !== 'photo-loading') return;
   const pass = message.pass || 0;
   const rawProgress = message.progress || 0;
-  const pct = pass === 1 ? Math.round(rawProgress * 50) : (pass === 2 ? 50 + Math.round(rawProgress * 50) : 0);
+  const pct = pass === 1 ? Math.round(rawProgress * 34)
+    : (pass === 2 ? 34 + Math.round(rawProgress * 33)
+    : (pass === 3 ? 67 + Math.round(rawProgress * 33) : 0));
   const labels = {
     'loading tesseract core': '読み取り機能を準備しています…',
     'initializing tesseract': '読み取り機能を準備しています…',
     'loading language traineddata': '日本語を準備しています…',
     'initializing api': '写真を確認しています…',
-    'recognizing text': `2つの方法で読み取っています… ${pct}%`
+    'recognizing text': `3つの方法で読み取っています… ${pct}%`
   };
   const textEl = document.getElementById('photoProgressText');
   const barEl = document.getElementById('photoProgressBar');
