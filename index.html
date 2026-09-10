@@ -403,6 +403,7 @@ let listening = false;
 let voiceTranscript = '';
 let photoText = '';
 let photoCandidates = [];
+let photoNeedsManual = false;
 let photoPreviewURL = '';
 let photoFile = null;
 let cropRect = { x:0.04, y:0.04, w:0.92, h:0.92 };
@@ -729,6 +730,7 @@ function clearPhotoState(){
   photoPreviewURL = '';
   photoText = '';
   photoCandidates = [];
+  photoNeedsManual = false;
   photoFile = null;
   cropRect = { x:0.04, y:0.04, w:0.92, h:0.92 };
   activeCropDrag = null;
@@ -776,6 +778,22 @@ function renderSheet(){
   } else if (sheetMode === 'photo-review') {
     body = `
       ${photoPreviewURL ? `<img class="photo-preview" src="${photoPreviewURL}" alt="読み取った写真">` : ''}
+      ${photoNeedsManual ? `
+        <div style="padding:12px 14px;margin-bottom:12px;border-radius:10px;background:rgba(155,138,63,.12);font-size:13px;line-height:1.6;">
+          手書き文字を正しく読めませんでした。写真を見ながら、分かる部分だけ入力してください。
+        </div>
+        <div class="field"><div class="field-label">予定名</div><input type="text" id="photoManualTitle" placeholder="例）通院、待ち合わせ"></div>
+        <div style="display:flex;gap:8px;">
+          <div class="field" style="flex:1;"><div class="field-label">日付</div><input type="date" id="photoManualDate" value="${presetDate||''}"></div>
+          <div class="field" style="flex:1;"><div class="field-label">時刻</div><input type="time" id="photoManualTime"></div>
+        </div>
+        <div id="photoManualError"></div>
+        <button class="primary-btn" onclick="submitPhotoManual()">この内容で予定を作る</button>
+        <details style="margin-top:14px;">
+          <summary style="font-size:12px;color:var(--ink-soft);cursor:pointer;">自動読み取りの結果を見る</summary>
+          <textarea rows="4" style="margin-top:8px;" readonly>${escapeHTML(photoText)}</textarea>
+        </details>
+      ` : `
       ${photoCandidates.length > 1 ? `<div class="field">
         <div class="field-label">読み取り候補</div>
         <div style="display:flex;gap:8px;">
@@ -789,6 +807,7 @@ function renderSheet(){
       <div class="photo-tip">日付と予定名が入っていることを確認してから、次へ進んでください。</div>
       <div id="photoError"></div>
       <button class="primary-btn" onclick="submitPhotoText()">日付と予定を読み取る</button>
+      `}
       <button class="menu-btn" style="justify-content:center;margin-top:10px;" onclick="clearPhotoState(); sheetMode='menu'; renderSheet();">撮り直す・別の写真を選ぶ</button>
     `;
   } else if (sheetMode === 'text') {
@@ -939,6 +958,7 @@ async function startPhotoOCR(){
   renderSheet();
   if (!window.Tesseract) {
     photoText = '';
+    photoNeedsManual = true;
     sheetMode = 'photo-review'; renderSheet();
     return;
   }
@@ -980,12 +1000,14 @@ async function startPhotoOCR(){
     candidates.sort((a, b)=>b.score - a.score);
     photoCandidates = candidates.filter((c, i, all)=>all.findIndex(x=>x.text===c.text)===i);
     photoText = photoCandidates[0] ? photoCandidates[0].text : '';
+    photoNeedsManual = !photoCandidates.some(c=>/(?:\d{1,2}\s*[\/月]\s*\d{1,2}|\d{1,2}\s*[:：時]\s*\d{1,2})/.test(c.text));
     sheetMode = 'photo-review';
     renderSheet();
   } catch(e) {
     if (requestId !== photoRequestId) return;
     photoCandidates = [];
     photoText = '';
+    photoNeedsManual = true;
     sheetMode = 'photo-review';
     renderSheet();
   } finally {
@@ -1099,6 +1121,19 @@ function submitPhotoText(){
   }
   const parsed = parseJapaneseDate(input, new Date());
   pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
+  sheetMode = 'confirm';
+  renderSheet();
+}
+
+function submitPhotoManual(){
+  const title = document.getElementById('photoManualTitle').value.trim();
+  const dueDate = document.getElementById('photoManualDate').value;
+  const time = document.getElementById('photoManualTime').value;
+  if (!title || !dueDate) {
+    document.getElementById('photoManualError').innerHTML = `<div class="error-line">予定名と日付を入力してください。</div>`;
+    return;
+  }
+  pending = { title, dueDate, time, note:'', notify:false };
   sheetMode = 'confirm';
   renderSheet();
 }
