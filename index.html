@@ -331,7 +331,7 @@ function renderSettingsSheet(){
 
         <div class="field">
           <div class="field-label">秘書の呼び名</div>
-          <input type="text" id="secretaryNameInput" value="${escapeHTML(name)}" placeholder="空欄なら「暦司」" onchange="setSecretaryName(this.value)">
+          <input type="text" id="secretaryNameInput" value="${escapeHTML(name)}" placeholder="空欄なら「秘書」" onchange="setSecretaryName(this.value)">
         </div>
 
         <div style="font-size:12.5px;color:var(--ink-soft);margin:16px 0;line-height:1.6;">
@@ -674,7 +674,7 @@ function parseJapaneseDate(rawText, base){
 
 /* ---------------- 描画: ヘッダー ---------------- */
 function getSecretaryName(){
-  return (localStorage.getItem('hizuke_secretary_name') || '').trim() || '暦司';
+  return (localStorage.getItem('hizuke_secretary_name') || '').trim() || '秘書';
 }
 
 function renderHeader(){
