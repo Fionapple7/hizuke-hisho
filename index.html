@@ -95,7 +95,7 @@
   .menu-btn{ display:flex; align-items:center; gap:10px; padding:14px 16px; border-radius:12px;
     border:1px solid rgba(46,64,52,0.15); background:var(--paper); font-size:15px; font-weight:500;
     cursor:pointer; color:var(--ink); width:100%; margin-bottom:10px; font-family:inherit; }
-  textarea, input[type=text], input[type=date]{ width:100%; border:1px solid rgba(113,137,122,0.4);
+  textarea, input[type=text], input[type=date], input[type=time], input[type=number], select{ width:100%; border:1px solid rgba(113,137,122,0.4);
     border-radius:10px; padding:10px 12px; font-family:inherit; font-size:15px; background:var(--paper); }
   textarea{ resize:none; }
   .field{ margin-bottom:12px; }
@@ -133,6 +133,12 @@
   .group-title{ margin:16px 18px 7px; font-size:13px; font-weight:700; color:var(--ink-soft); display:flex; align-items:center; gap:6px; }
   .quick-actions{ display:flex; gap:6px; margin-top:8px; }
   .quick-actions button{ border:1px solid rgba(46,64,52,.2); background:var(--paper); color:var(--ink); border-radius:16px; padding:5px 9px; font:500 11px inherit; cursor:pointer; }
+  .recurrence-box{ border:1px solid rgba(46,64,52,.14); border-radius:12px; padding:12px; margin:12px 0; background:rgba(92,133,103,.06); }
+  .weekday-checks{ display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
+  .weekday-checks label{ cursor:pointer; }
+  .weekday-checks input{ position:absolute; opacity:0; pointer-events:none; }
+  .weekday-checks span{ width:34px; height:34px; border-radius:50%; border:1px solid rgba(46,64,52,.25); display:flex; align-items:center; justify-content:center; font-size:12px; background:var(--card); }
+  .weekday-checks input:checked + span{ background:var(--ink); color:var(--card); border-color:var(--ink); }
   .spin{ display:inline-block; animation:spin 1s linear infinite; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
 </style>
@@ -462,8 +468,8 @@ function maybeAutoNotify(){
   speakBriefing();
 }
 
-function fireTaskNotification(task){
-  const text = `${task.title}の時間ですよ！`;
+function fireTaskNotification(task, previousDay=false){
+  const text = previousDay ? `明日は${task.title}の日です。今のうちに準備しますか？` : `${task.title}の時間ですよ！`;
   if ('Notification' in window && Notification.permission === 'granted') {
     try { new Notification(`⏰ ${getSecretaryName()}より`, { body: text }); } catch(e){}
   }
@@ -478,8 +484,21 @@ function checkTaskNotifications(){
   const now = new Date();
   const nowHM = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
   const today = todayISO();
+  const tomorrowDate = new Date(); tomorrowDate.setDate(tomorrowDate.getDate()+1);
+  const tomorrow = fmt(tomorrowDate);
   let changed = false;
   tasks.forEach(t=>{
+    if (t.done) return;
+    const recurrence = t.recurrence;
+    if (recurrence && recurrence.notifyPreviousDay && t.dueDate === tomorrow) {
+      const previousTime = recurrence.previousTime || '19:00';
+      if (t.lastPreNotifiedDate !== today && nowHM >= previousTime) {
+        fireTaskNotification(t, true);
+        t.lastPreNotifiedDate = today;
+        t.updatedAt = Date.now();
+        changed = true;
+      }
+    }
     if (!t.notify || t.done || !t.time || t.dueDate !== today) return;
     if (t.lastNotifiedDate === today) return;
     if (nowHM < t.time) return;
@@ -572,6 +591,46 @@ function formatJP(iso){ if(!iso) return ''; const d=new Date(iso+'T00:00:00'); r
 function stampColor(diff){ if(diff===null) return 'var(--ink-soft)'; if(diff<0) return 'var(--urgent-dark)'; if(diff<=3) return 'var(--urgent)'; if(diff<=7) return 'var(--mid)'; return 'var(--ink)'; }
 function stampLabel(diff){ if(diff===null) return '日付未定'; if(diff<0) return `期限切${Math.abs(diff)}日超過`; if(diff===0) return '本日締切'; return `あと${diff}日`; }
 
+/* ---------------- くり返し予定 ---------------- */
+function isLastWeekdayOfMonth(date){
+  const next = new Date(date); next.setDate(date.getDate()+7);
+  return next.getMonth() !== date.getMonth();
+}
+
+function matchesRecurrenceDate(date, rule){
+  if (!rule || !rule.type) return false;
+  if (rule.type === 'daily') return true;
+  if (rule.type === 'weekly') return (rule.weekdays || []).map(Number).includes(date.getDay());
+  if (rule.type === 'monthly_date') return date.getDate() === Number(rule.day);
+  if (rule.type === 'monthly_weekday') {
+    if (date.getDay() !== Number(rule.weekday)) return false;
+    const week = Number(rule.week);
+    return week === -1 ? isLastWeekdayOfMonth(date) : Math.ceil(date.getDate()/7) === week;
+  }
+  return false;
+}
+
+function nextRecurrenceDate(rule, fromISO, inclusive=false){
+  if (!rule || !fromISO) return '';
+  const date = new Date(fromISO + 'T00:00:00');
+  const start = inclusive ? 0 : 1;
+  for (let i=start; i<=1100; i++) {
+    const candidate = new Date(date);
+    candidate.setDate(date.getDate()+i);
+    if (matchesRecurrenceDate(candidate, rule)) return fmt(candidate);
+  }
+  return '';
+}
+
+function formatRecurrence(rule){
+  if (!rule) return '';
+  if (rule.type === 'daily') return '毎日';
+  if (rule.type === 'weekly') return `毎週 ${(rule.weekdays||[]).map(d=>WD[Number(d)]).join('・')}`;
+  if (rule.type === 'monthly_date') return `毎月${rule.day}日`;
+  if (rule.type === 'monthly_weekday') return `毎月${Number(rule.week)===-1?'最終':`第${rule.week}`} ${WD[Number(rule.weekday)]}曜`;
+  return '';
+}
+
 /* ---------------- ルールベースの日本語日付パーサー ---------------- */
 function japaneseNumberValue(value){
   const digits = { '〇':0, '一':1, '二':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9 };
@@ -591,7 +650,29 @@ function parseJapaneseDate(rawText, base){
   let title = text;
   let dueDate = null;
   let note = '';
+  let recurrence = null;
   const b = new Date(base); b.setHours(0,0,0,0);
+
+  const monthlyWeek = text.match(/毎月\s*(?:(?:第\s*([1-4一二三四]))|(最終))\s*([日月火水木金土])曜日?/);
+  const monthlyDate = text.match(/毎月\s*(\d{1,2})\s*日/);
+  const weekly = text.match(/毎週\s*((?:(?:[日月火水木金土])(?:曜(?:日)?)?(?:[・、,と\s]*)?)+)/);
+  if (/毎日/.test(text)) {
+    recurrence = { type:'daily', notifyPreviousDay:false, previousTime:'19:00' };
+    title = title.replace(/毎日/, '');
+  } else if (monthlyWeek) {
+    const weekMap = { '一':1, '二':2, '三':3, '四':4 };
+    recurrence = { type:'monthly_weekday', week:monthlyWeek[2] ? -1 : (Number(monthlyWeek[1]) || weekMap[monthlyWeek[1]]), weekday:WD.indexOf(monthlyWeek[3]), notifyPreviousDay:false, previousTime:'19:00' };
+    title = title.replace(monthlyWeek[0], '');
+  } else if (monthlyDate) {
+    recurrence = { type:'monthly_date', day:Number(monthlyDate[1]), notifyPreviousDay:false, previousTime:'19:00' };
+    title = title.replace(monthlyDate[0], '');
+  } else if (weekly) {
+    const weekdays = [...weekly[1].matchAll(/([日月火水木金土])曜(?:日)?/g)].map(m=>WD.indexOf(m[1]));
+    if (weekdays.length) {
+      recurrence = { type:'weekly', weekdays:[...new Set(weekdays)], notifyPreviousDay:false, previousTime:'19:00' };
+      title = title.replace(weekly[0], '');
+    }
+  }
 
   // 明後日 / 明日 / 今日
   if (/明後日/.test(text)) { const d=new Date(b); d.setDate(d.getDate()+2); dueDate=fmt(d); title=title.replace(/明後日/,''); }
@@ -632,7 +713,7 @@ function parseJapaneseDate(rawText, base){
   }
 
   // 来週/今週 + 曜日、または曜日のみ
-  if (!dueDate) {
+  if (!dueDate && !recurrence) {
     const m3 = text.match(/(来週|今週)?\s*([日月火水木金土])曜日?/);
     if (m3) {
       const targetIdx = WD.indexOf(m3[2]);
@@ -665,11 +746,13 @@ function parseJapaneseDate(rawText, base){
     }
   }
 
+  if (recurrence && !dueDate) dueDate = nextRecurrenceDate(recurrence, fmt(b), true);
+
   title = title.replace(/[（(]\s*[日月火水木金土]\s*[)）]/g,'').replace(/まで(に)?/g,'').replace(/[、,]/g,' ').replace(/^[のにへを\s]+/,'').replace(/[のにへを\s]+$/,'').trim();
   if (!title) title = '新しい予定';
   if (title.length > 40) title = title.slice(0,40);
 
-  return { title, dueDate, time, note };
+  return { title, dueDate, time, note, recurrence };
 }
 
 /* ---------------- 描画: ヘッダー ---------------- */
@@ -739,16 +822,17 @@ function renderTaskCard(t){
     </div>` : '';
   const quickActions = !t.done && diff !== null && diff <= 0 ? `
     <div class="quick-actions">
-      ${diff < 0 ? `<button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',0)">今日へ</button>` : ''}
-      <button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',1)">明日へ</button>
-      <button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',7)">1週間後へ</button>
+      ${t.recurrence ? `<button onclick="event.stopPropagation(); skipRecurringOccurrence('${t.id}')">次回へ送る</button>` : `
+        ${diff < 0 ? `<button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',0)">今日へ</button>` : ''}
+        <button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',1)">明日へ</button>
+        <button onclick="event.stopPropagation(); moveTaskToOffset('${t.id}',7)">1週間後へ</button>`}
     </div>` : '';
   return `
     <div class="task-card ${t.done?'done':''}">
       <button class="check ${t.done?'done':''}" onclick="toggleDone('${t.id}')" aria-label="${t.done?'未完了に戻す':'完了にする'}">${t.done?'✓':''}</button>
       <div class="task-body">
         <div class="task-title ${t.done?'done':''}">${escapeHTML(t.title)}</div>
-        <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.notify?' 🔔':''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
+        <div class="task-sub">${t.dueDate?formatJP(t.dueDate):'日付未設定'}${t.time?` ・ ${t.time}`:''}${t.recurrence?` ・ 🔁 ${escapeHTML(formatRecurrence(t.recurrence))}`:''}${t.notify||t.recurrence?.notifyPreviousDay?' 🔔':''}${t.note?` ・ ${escapeHTML(t.note)}`:''}</div>
         ${quickActions}
       </div>
       ${stampHTML}
@@ -808,7 +892,19 @@ function renderCalendar(){
   const curMonth = monthCursor.getMonth();
   const tISO = todayISO();
   const byDate = {};
-  tasks.forEach(t=>{ if(!t.dueDate) return; (byDate[t.dueDate] = byDate[t.dueDate]||[]).push(t); });
+  tasks.forEach(t=>{
+    if (!t.dueDate) return;
+    if (t.recurrence && !t.done) {
+      cells.forEach(date=>{
+        const iso = fmt(date);
+        if (iso >= t.dueDate && matchesRecurrenceDate(date, t.recurrence)) {
+          (byDate[iso] = byDate[iso]||[]).push({ ...t, occurrenceDate:iso });
+        }
+      });
+    } else {
+      (byDate[t.dueDate] = byDate[t.dueDate]||[]).push(t);
+    }
+  });
 
   const gridHTML = cells.map(d=>{
     const iso = fmt(d);
@@ -827,15 +923,18 @@ function renderCalendar(){
   });
   const selListHTML = selTasks.length===0
     ? `<div style="font-size:13px;color:var(--ink-soft);padding:10px 2px;">予定はありません</div>`
-    : selTasks.map(t=>`
+    : selTasks.map(t=>{
+      const futureOccurrence = !!(t.occurrenceDate && t.occurrenceDate !== t.dueDate);
+      return `
       <div class="task-card" style="padding:10px 12px;${t.done?'opacity:0.55;':''}">
-        <button class="check ${t.done?'done':''}" style="width:24px;height:24px;font-size:12px;" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>
+        ${futureOccurrence ? `<span style="width:24px;text-align:center;font-size:14px;">🔁</span>` : `<button class="check ${t.done?'done':''}" style="width:24px;height:24px;font-size:12px;" onclick="toggleDone('${t.id}')">${t.done?'✓':''}</button>`}
         <div style="flex:1;">
-          <div style="font-size:14px;font-weight:500;${t.done?'text-decoration:line-through;':''}">${t.time?`<span style="color:var(--ink-soft);font-weight:600;margin-right:6px;">${t.time}</span>`:''}${escapeHTML(t.title)}${t.note?` <span style="color:var(--ink-soft);font-weight:400">・ ${escapeHTML(t.note)}</span>`:''}</div>
+          <div style="font-size:14px;font-weight:500;${t.done?'text-decoration:line-through;':''}">${t.time?`<span style="color:var(--ink-soft);font-weight:600;margin-right:6px;">${t.time}</span>`:''}${escapeHTML(t.title)}${t.recurrence?' <span style="color:var(--ink-soft);font-size:11px;">くり返し</span>':''}${t.note?` <span style="color:var(--ink-soft);font-weight:400">・ ${escapeHTML(t.note)}</span>`:''}</div>
         </div>
         <button class="del-btn" onclick="openEditSheet('${t.id}')" aria-label="編集">✏️</button>
-        <button class="del-btn" onclick="deleteTask('${t.id}')">🗑</button>
-      </div>`).join('');
+        <button class="del-btn" onclick="deleteTask('${t.id}')" aria-label="削除">🗑</button>
+      </div>`;
+    }).join('');
 
   return `
     <div class="cal-card">
@@ -877,7 +976,30 @@ function escapeHTML(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':
 let undoDelete = null;
 let undoTimer = null;
 
-function toggleDone(id){ tasks = tasks.map(t=>t.id===id?{...t,done:!t.done,updatedAt:Date.now()}:t); saveTasks(); renderAll(); }
+function toggleDone(id){
+  const task = tasks.find(t=>t.id===id);
+  if (!task) return;
+  if (task.recurrence && !task.done) {
+    advanceRecurringTask(id, '完了しました');
+    return;
+  }
+  tasks = tasks.map(t=>t.id===id?{...t,done:!t.done,updatedAt:Date.now()}:t);
+  saveTasks(); renderAll();
+}
+
+function advanceRecurringTask(id, message){
+  const task = tasks.find(t=>t.id===id);
+  if (!task || !task.recurrence) return;
+  const base = task.dueDate && task.dueDate > todayISO() ? task.dueDate : todayISO();
+  const next = nextRecurrenceDate(task.recurrence, base, false);
+  if (!next) return;
+  tasks = tasks.map(t=>t.id===id ? { ...t, dueDate:next, done:false, lastNotifiedDate:'', lastPreNotifiedDate:'', updatedAt:Date.now() } : t);
+  saveTasks();
+  renderAll();
+  showToast(`${message}。次は${formatJP(next)}です`);
+}
+
+function skipRecurringOccurrence(id){ advanceRecurringTask(id, '今回分を次回へ送りました'); }
 function deleteTask(id){
   const task = tasks.find(t=>t.id===id);
   if (!task) return;
@@ -887,7 +1009,7 @@ function deleteTask(id){
   tasks = tasks.filter(t=>t.id!==id);
   saveTasks();
   renderAll();
-  showToast(`「${task.title}」を削除しました`, '元に戻す', undoLastDelete, 8000);
+  showToast(task.recurrence ? `「${task.title}」のくり返しを削除しました` : `「${task.title}」を削除しました`, '元に戻す', undoLastDelete, 8000);
 }
 
 function undoLastDelete(){
@@ -909,9 +1031,9 @@ function showToast(message, actionLabel='', action=null, duration=3500){
   undoTimer = setTimeout(()=>{ root.innerHTML=''; if (actionLabel) undoDelete=null; }, duration);
 }
 
-function addTask(title, dueDate, time, note, notify){
+function addTask(title, dueDate, time, note, notify, recurrence=null){
   const now = Date.now();
-  tasks.push({ id: now.toString(), title: title.trim(), dueDate: dueDate||'', time: time||'', note: note||'', done:false, notify: !!notify, lastNotifiedDate: '', updatedAt:now });
+  tasks.push({ id: now.toString(), title: title.trim(), dueDate: dueDate||'', time: time||'', note: note||'', done:false, notify: !!notify, recurrence:recurrence||null, lastNotifiedDate:'', lastPreNotifiedDate:'', updatedAt:now });
   saveTasks();
   renderAll();
 }
@@ -949,7 +1071,7 @@ function openEditSheet(id){
   if (!t) return;
   editingTaskId = id;
   presetDate = null;
-  pending = { title: t.title, dueDate: t.dueDate || '', time: t.time || '', note: t.note || '', notify: !!t.notify };
+  pending = { title: t.title, dueDate: t.dueDate || '', time: t.time || '', note: t.note || '', notify: !!t.notify, recurrence:t.recurrence || null };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -1092,6 +1214,12 @@ function renderSheet(){
     `;
   } else if (sheetMode === 'confirm' && pending) {
     const isEdit = !!editingTaskId;
+    const rec = pending.recurrence || {};
+    const recBase = pending.dueDate ? new Date(pending.dueDate+'T00:00:00') : new Date();
+    const recWeekdays = (rec.weekdays || [recBase.getDay()]).map(Number);
+    const recDay = Number(rec.day) || recBase.getDate();
+    const recWeek = Number(rec.week) || Math.min(4, Math.ceil(recBase.getDate()/7));
+    const recWeekday = rec.weekday === undefined ? recBase.getDay() : Number(rec.weekday);
     body = `
       <div class="field"><div class="field-label">タイトル</div><input type="text" id="pTitle" value="${escapeHTML(pending.title)}"></div>
       <div class="field"><div class="field-label">期限日</div><input type="date" id="pDate" value="${pending.dueDate||''}" onchange="updateDateHint()"></div>
@@ -1102,6 +1230,43 @@ function renderSheet(){
         <button type="button" onclick="clearPendingDate()" class="tab-btn">日付なし</button>
       </div>
       <div id="dateHint" class="photo-tip" style="margin-bottom:12px;"></div>
+      <div class="recurrence-box">
+        <div class="field-label">くり返し</div>
+        <select id="pRecurrenceType" onchange="updateRecurrenceFields()">
+          <option value="" ${!rec.type?'selected':''}>くり返さない</option>
+          <option value="daily" ${rec.type==='daily'?'selected':''}>毎日</option>
+          <option value="weekly" ${rec.type==='weekly'?'selected':''}>毎週（曜日を選ぶ）</option>
+          <option value="monthly_date" ${rec.type==='monthly_date'?'selected':''}>毎月（日付を選ぶ）</option>
+          <option value="monthly_weekday" ${rec.type==='monthly_weekday'?'selected':''}>毎月（第○曜日）</option>
+        </select>
+        <div id="weeklyFields" style="margin-top:10px;display:none;">
+          <div class="field-label">曜日（複数選べます）</div>
+          <div class="weekday-checks">${WD.map((day,i)=>`<label><input type="checkbox" name="pWeekday" value="${i}" ${recWeekdays.includes(i)?'checked':''}><span>${day}</span></label>`).join('')}</div>
+        </div>
+        <div id="monthlyDateFields" style="margin-top:10px;display:none;">
+          <div class="field-label">毎月何日？</div>
+          <input type="number" id="pRecurrenceDay" min="1" max="31" value="${recDay}">
+        </div>
+        <div id="monthlyWeekdayFields" style="margin-top:10px;display:none;">
+          <div style="display:flex;gap:8px;">
+            <select id="pRecurrenceWeek">
+              ${[1,2,3,4].map(n=>`<option value="${n}" ${recWeek===n?'selected':''}>第${n}</option>`).join('')}
+              <option value="-1" ${recWeek===-1?'selected':''}>最終</option>
+            </select>
+            <select id="pRecurrenceWeekday">${WD.map((day,i)=>`<option value="${i}" ${recWeekday===i?'selected':''}>${day}曜日</option>`).join('')}</select>
+          </div>
+        </div>
+        <div id="previousNotifyFields" style="margin-top:12px;display:none;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="pNotifyPrevious" ${rec.notifyPreviousDay?'checked':''} onchange="setPreviousNotify(this.checked)"> 前日にも知らせる
+          </label>
+          <div id="previousTimeWrap" style="margin-top:8px;display:${rec.notifyPreviousDay?'block':'none'};">
+            <div class="field-label">前日に知らせる時間</div>
+            <input type="time" id="pPreviousTime" value="${rec.previousTime||'19:00'}">
+          </div>
+          <div class="photo-tip" style="margin-top:7px;">通知はアプリを開いている間だけ動作します。</div>
+        </div>
+      </div>
       <div class="field"><div class="field-label">時間（任意）</div><input type="time" id="pTime" value="${pending.time||''}" onchange="toggleNotifyFieldVisibility()"></div>
       <div class="field" id="pNotifyField" style="display:${pending.time?'block':'none'};">
         <div class="field-label">この時間になったら通知する</div>
@@ -1124,14 +1289,14 @@ function renderSheet(){
         ${body}
       </div>
     </div>`;
-  if (sheetMode === 'confirm') updateDateHint();
+  if (sheetMode === 'confirm') { updateDateHint(); updateRecurrenceFields(); }
 }
 
 function submitText(){
   const input = document.getElementById('textInput').value.trim();
   if (!input) return;
   const parsed = parseJapaneseDate(input, new Date());
-  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
+  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify:false, recurrence:parsed.recurrence || null };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -1375,7 +1540,7 @@ function submitPhotoText(){
     return;
   }
   const parsed = parseJapaneseDate(input, new Date());
-  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify: false };
+  pending = { title: parsed.title, dueDate: parsed.dueDate || presetDate || '', time: parsed.time || '', note: parsed.note, notify:false, recurrence:parsed.recurrence || null };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -1388,7 +1553,7 @@ function submitPhotoManual(){
     document.getElementById('photoManualError').innerHTML = `<div class="error-line">予定名と日付を入力してください。</div>`;
     return;
   }
-  pending = { title, dueDate, time, note:'', notify:false };
+  pending = { title, dueDate, time, note:'', notify:false, recurrence:null };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -1485,7 +1650,7 @@ function submitVoiceTranscript(){
     .replace(/お願い(します)?/g, '')
     .trim();
   if (!title) title = '新しい予定';
-  pending = { title, dueDate:parsed.dueDate || presetDate || '', time:parsed.time || '', note:parsed.note, notify:false };
+  pending = { title, dueDate:parsed.dueDate || presetDate || '', time:parsed.time || '', note:parsed.note, notify:false, recurrence:parsed.recurrence || null };
   sheetMode = 'confirm';
   renderSheet();
 }
@@ -1527,6 +1692,54 @@ function updateDateHint(){
   hint.style.color = diff < 0 ? 'var(--urgent-dark)' : 'var(--green)';
 }
 
+function updateRecurrenceFields(){
+  const type = document.getElementById('pRecurrenceType')?.value || '';
+  const weekly = document.getElementById('weeklyFields');
+  const monthlyDate = document.getElementById('monthlyDateFields');
+  const monthlyWeekday = document.getElementById('monthlyWeekdayFields');
+  const previous = document.getElementById('previousNotifyFields');
+  if (weekly) weekly.style.display = type==='weekly' ? 'block' : 'none';
+  if (monthlyDate) monthlyDate.style.display = type==='monthly_date' ? 'block' : 'none';
+  if (monthlyWeekday) monthlyWeekday.style.display = type==='monthly_weekday' ? 'block' : 'none';
+  if (previous) previous.style.display = type ? 'block' : 'none';
+  updatePreviousTimeVisibility();
+}
+
+function updatePreviousTimeVisibility(){
+  const checked = !!document.getElementById('pNotifyPrevious')?.checked;
+  const wrap = document.getElementById('previousTimeWrap');
+  if (wrap) wrap.style.display = checked ? 'block' : 'none';
+}
+
+function setPreviousNotify(on){
+  if (on && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+  updatePreviousTimeVisibility();
+}
+
+function readRecurrenceForm(){
+  const type = document.getElementById('pRecurrenceType')?.value || '';
+  if (!type) return { rule:null };
+  const base = {
+    type,
+    notifyPreviousDay:!!document.getElementById('pNotifyPrevious')?.checked,
+    previousTime:document.getElementById('pPreviousTime')?.value || '19:00'
+  };
+  if (type === 'weekly') {
+    const weekdays = [...document.querySelectorAll('input[name="pWeekday"]:checked')].map(el=>Number(el.value));
+    if (!weekdays.length) return { error:'くり返す曜日を1つ以上選んでください。' };
+    return { rule:{ ...base, weekdays } };
+  }
+  if (type === 'monthly_date') {
+    const day = Number(document.getElementById('pRecurrenceDay')?.value);
+    if (day < 1 || day > 31) return { error:'毎月の日付は1〜31で入力してください。' };
+    return { rule:{ ...base, day } };
+  }
+  if (type === 'monthly_weekday') {
+    return { rule:{ ...base, week:Number(document.getElementById('pRecurrenceWeek').value), weekday:Number(document.getElementById('pRecurrenceWeekday').value) } };
+  }
+  return { rule:base };
+}
+
 function toggleNotifyFieldVisibility(){
   const timeVal = document.getElementById('pTime').value;
   const field = document.getElementById('pNotifyField');
@@ -1553,12 +1766,20 @@ function setPendingNotify(on){
 
 function confirmSave(){
   const title = document.getElementById('pTitle').value.trim();
-  const dueDate = document.getElementById('pDate').value;
+  let dueDate = document.getElementById('pDate').value;
   const time = document.getElementById('pTime').value;
   const note = document.getElementById('pNote').value.trim();
   const notifyEl = document.getElementById('pNotify');
   const notify = !!(time && notifyEl && notifyEl.value === '1');
+  const recurrenceResult = readRecurrenceForm();
+  const recurrence = recurrenceResult.rule;
   if (!title) { document.getElementById('confirmError').innerHTML = `<div class="error-line">タイトルを入力してください。</div>`; return; }
+  if (recurrenceResult.error) { document.getElementById('confirmError').innerHTML = `<div class="error-line">${escapeHTML(recurrenceResult.error)}</div>`; return; }
+  if (recurrence && !dueDate) { document.getElementById('confirmError').innerHTML = `<div class="error-line">くり返し予定には、最初の日付を設定してください。</div>`; return; }
+  if (recurrence) {
+    dueDate = nextRecurrenceDate(recurrence, dueDate, true);
+    if (!dueDate) { document.getElementById('confirmError').innerHTML = `<div class="error-line">次回の日付を計算できませんでした。</div>`; return; }
+  }
   if (notify && !dueDate) { document.getElementById('confirmError').innerHTML = `<div class="error-line">通知する予定には日付も設定してください。</div>`; return; }
   const original = editingTaskId ? tasks.find(t=>t.id===editingTaskId) : null;
   if (dueDate && dueDate < todayISO() && (!original || original.dueDate !== dueDate)) {
@@ -1568,11 +1789,11 @@ function confirmSave(){
     if (!confirm('同じ予定がすでに登録されています。もう一件追加しますか？')) return;
   }
   if (editingTaskId) {
-    tasks = tasks.map(t => t.id === editingTaskId ? { ...t, title, dueDate, time, note, notify, updatedAt:Date.now(), lastNotifiedDate: (t.time!==time || t.dueDate!==dueDate) ? '' : t.lastNotifiedDate } : t);
+    tasks = tasks.map(t => t.id === editingTaskId ? { ...t, title, dueDate, time, note, notify, recurrence, updatedAt:Date.now(), lastPreNotifiedDate:'', lastNotifiedDate: (t.time!==time || t.dueDate!==dueDate) ? '' : t.lastNotifiedDate } : t);
     saveTasks();
     renderAll();
   } else {
-    addTask(title, dueDate, time, note, notify);
+    addTask(title, dueDate, time, note, notify, recurrence);
   }
   closeSheet();
 }
