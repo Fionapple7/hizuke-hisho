@@ -195,6 +195,10 @@ function buildSyncPayload(){
   return { version:2, tasks, deleted:deletedTasks, savedAt:Date.now() };
 }
 
+function buildSyncMeta(){
+  return { version:2, deleted:deletedTasks, savedAt:Date.now(), authoritativeAt:syncAuthoritativeAt || 0 };
+}
+
 function createAutoBackup(reason){
   let backups = [];
   try { backups = JSON.parse(localStorage.getItem('hizuke_backups') || '[]'); } catch(e){}
@@ -230,6 +234,7 @@ let ghGistId = localStorage.getItem('hizuke_gist_id') || '';
 let pushTimer = null;
 let syncing = false;
 let syncDirty = false;
+let syncAuthoritativeAt = Number(localStorage.getItem('hizuke_sync_authoritative_at')) || 0;
 
 function ghHeaders(){ return { 'Authorization': `token ${ghToken}`, 'Accept': 'application/vnd.github+json' }; }
 
@@ -251,7 +256,7 @@ async function createGist(){
       public: false,
       files: {
         'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) },
-        'hizuke-sync-meta.json': { content: JSON.stringify({ version:2, deleted:deletedTasks, savedAt:Date.now() }, null, 2) }
+        'hizuke-sync-meta.json': { content: JSON.stringify(buildSyncMeta(), null, 2) }
       }
     })
   });
@@ -272,7 +277,16 @@ async function pullFromGist(){
       try { remote = { ...JSON.parse(metaFile.content), tasks:remote }; } catch(e){}
     }
     createAutoBackup('同期前');
-    mergeSyncState(remote);
+    const remoteAuthoritativeAt = Number(remote && remote.authoritativeAt) || 0;
+    if (remoteAuthoritativeAt > syncAuthoritativeAt) {
+      tasks = (Array.isArray(remote.tasks) ? remote.tasks : []).map(normalizeTask);
+      deletedTasks = { ...(remote.deleted || {}) };
+      syncAuthoritativeAt = remoteAuthoritativeAt;
+      localStorage.setItem('hizuke_sync_authoritative_at', String(syncAuthoritativeAt));
+      saveTasks({ push:false });
+    } else {
+      mergeSyncState(remote);
+    }
   }
 }
 
@@ -288,7 +302,7 @@ async function pushToGist(){
       headers: { ...ghHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ files: {
         'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) },
-        'hizuke-sync-meta.json': { content: JSON.stringify({ version:2, deleted:deletedTasks, savedAt:Date.now() }, null, 2) }
+        'hizuke-sync-meta.json': { content: JSON.stringify(buildSyncMeta(), null, 2) }
       } })
     });
     if (!res.ok) throw new Error('保存に失敗 (HTTP ' + res.status + ')');
@@ -532,8 +546,82 @@ function openSyncSheet(){
         <div id="syncError"></div>
         <button class="primary-btn" onclick="connectSync()">接続する</button>
         ${ghGistId ? `<div style="margin-top:14px;font-size:12px;color:var(--ink-soft);">現在のGist ID:<br/><b style="user-select:all;color:var(--ink);">${ghGistId}</b><br/>（この文字列を他の端末の設定にも入力してください）</div>` : ''}
+        ${ghGistId ? `
+          <div style="border-top:1px solid rgba(46,64,52,.15);margin:20px 0 10px;padding-top:16px;">
+            <div style="font-weight:600;font-size:14px;margin-bottom:6px;">端末どうしの内容が違うとき</div>
+            <div class="photo-tip">正しい予定が入っている端末で、上のボタンを押してください。ほかの端末は、次の同期でその内容に揃います。</div>
+            <button class="menu-btn" onclick="overwriteGistWithThisDevice()">📱 この端末の内容を正解にする</button>
+            <button class="menu-btn" onclick="replaceThisDeviceFromGist()">☁️ 同期先の内容をこの端末へ入れる</button>
+          </div>` : ''}
       </div>
     </div>`;
+}
+
+function showSyncError(message, ok=false){
+  const el = document.getElementById('syncError');
+  if (!el) return;
+  el.innerHTML = `<div class="${ok ? '' : 'error-line'}" style="${ok ? 'color:var(--green);font-size:12.5px;margin:8px 0;' : ''}">${escapeHTML(message)}</div>`;
+}
+
+async function overwriteGistWithThisDevice(){
+  if (!ghToken || !ghGistId) { showSyncError('先にGitHubへ接続してください。'); return; }
+  if (!confirm(`この端末の予定 ${tasks.length}件を正しい内容として、同期先を上書きしますか？\n\nほかの端末の内容は、次の同期でこの内容に揃います。`)) return;
+  createAutoBackup('同期先の上書き前');
+  const previousAuthoritativeAt = syncAuthoritativeAt;
+  syncAuthoritativeAt = Date.now();
+  localStorage.setItem('hizuke_sync_authoritative_at', String(syncAuthoritativeAt));
+  updateSyncBtn('syncing');
+  try {
+    const res = await fetch(`https://api.github.com/gists/${ghGistId}`, {
+      method:'PATCH',
+      headers:{ ...ghHeaders(), 'Content-Type':'application/json' },
+      body:JSON.stringify({ files:{
+        'hizuke-tasks.json':{ content:JSON.stringify(tasks, null, 2) },
+        'hizuke-sync-meta.json':{ content:JSON.stringify(buildSyncMeta(), null, 2) }
+      } })
+    });
+    if (!res.ok) throw new Error(`上書きできませんでした（HTTP ${res.status}）`);
+    updateSyncBtn('ok');
+    showSyncError('この端末の内容を正解として保存しました。', true);
+  } catch(e) {
+    syncAuthoritativeAt = previousAuthoritativeAt;
+    localStorage.setItem('hizuke_sync_authoritative_at', String(syncAuthoritativeAt));
+    updateSyncBtn('error');
+    showSyncError(e.message || String(e));
+  }
+}
+
+async function replaceThisDeviceFromGist(){
+  if (!ghToken || !ghGistId) { showSyncError('先にGitHubへ接続してください。'); return; }
+  if (!confirm('この端末の現在の予定を退避して、同期先の内容に置き換えますか？')) return;
+  updateSyncBtn('syncing');
+  try {
+    const res = await fetch(`https://api.github.com/gists/${ghGistId}`, { headers:ghHeaders() });
+    if (!res.ok) throw new Error(`取得できませんでした（HTTP ${res.status}）`);
+    const data = await res.json();
+    const file = data.files && data.files['hizuke-tasks.json'];
+    if (!file || !file.content) throw new Error('同期先に予定データが見つかりません。');
+    const remoteTasks = JSON.parse(file.content);
+    if (!Array.isArray(remoteTasks)) throw new Error('同期先の予定データを読み取れません。');
+    let remoteMeta = {};
+    const metaFile = data.files && data.files['hizuke-sync-meta.json'];
+    if (metaFile && metaFile.content) {
+      try { remoteMeta = JSON.parse(metaFile.content) || {}; } catch(e){}
+    }
+    createAutoBackup('同期先から置き換える前');
+    tasks = remoteTasks.map(normalizeTask);
+    deletedTasks = { ...(remoteMeta.deleted || {}) };
+    syncAuthoritativeAt = Math.max(syncAuthoritativeAt, Number(remoteMeta.authoritativeAt) || 0);
+    localStorage.setItem('hizuke_sync_authoritative_at', String(syncAuthoritativeAt));
+    saveTasks({ push:false });
+    updateSyncBtn('ok');
+    renderAll();
+    openSyncSheet();
+    showSyncError('同期先の内容をこの端末へ入れました。', true);
+  } catch(e) {
+    updateSyncBtn('error');
+    showSyncError(e.message || String(e));
+  }
 }
 
 async function connectSync(){
