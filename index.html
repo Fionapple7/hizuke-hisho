@@ -266,7 +266,9 @@ async function createGist(){
 }
 
 async function pullFromGist(){
-  const res = await fetch(`https://api.github.com/gists/${ghGistId}`, { headers: ghHeaders() });
+  const res = await fetch(`https://api.github.com/gists/${ghGistId}?fresh=${Date.now()}`, {
+    headers: { ...ghHeaders(), 'Cache-Control':'no-cache' }, cache:'no-store'
+  });
   if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(`取得に失敗 (HTTP ${res.status}) ${t.slice(0,150)}`); }
   const data = await res.json();
   const file = data.files && data.files['hizuke-tasks.json'];
@@ -565,38 +567,60 @@ function showSyncError(message, ok=false){
 
 async function overwriteGistWithThisDevice(){
   if (!ghToken || !ghGistId) { showSyncError('先にGitHubへ接続してください。'); return; }
+  if (syncing) { showSyncError('いま自動同期中です。数秒待って、もう一度押してください。'); return; }
   if (!confirm(`この端末の予定 ${tasks.length}件を正しい内容として、同期先を上書きしますか？\n\nほかの端末の内容は、次の同期でこの内容に揃います。`)) return;
   createAutoBackup('同期先の上書き前');
+  clearTimeout(pushTimer);
+  syncDirty = false;
+  syncing = true;
   const previousAuthoritativeAt = syncAuthoritativeAt;
   syncAuthoritativeAt = Date.now();
   localStorage.setItem('hizuke_sync_authoritative_at', String(syncAuthoritativeAt));
+  const sourceTasks = JSON.parse(JSON.stringify(tasks));
+  const sourceDeleted = { ...deletedTasks };
+  const sourceMeta = { version:2, deleted:sourceDeleted, savedAt:Date.now(), authoritativeAt:syncAuthoritativeAt };
   updateSyncBtn('syncing');
   try {
     const res = await fetch(`https://api.github.com/gists/${ghGistId}`, {
       method:'PATCH',
       headers:{ ...ghHeaders(), 'Content-Type':'application/json' },
       body:JSON.stringify({ files:{
-        'hizuke-tasks.json':{ content:JSON.stringify(tasks, null, 2) },
-        'hizuke-sync-meta.json':{ content:JSON.stringify(buildSyncMeta(), null, 2) }
+        'hizuke-tasks.json':{ content:JSON.stringify(sourceTasks, null, 2) },
+        'hizuke-sync-meta.json':{ content:JSON.stringify(sourceMeta, null, 2) }
       } })
     });
     if (!res.ok) throw new Error(`上書きできませんでした（HTTP ${res.status}）`);
+    const saved = await res.json();
+    const savedFile = saved.files && saved.files['hizuke-tasks.json'];
+    const savedTasks = savedFile && savedFile.content ? JSON.parse(savedFile.content) : null;
+    if (!Array.isArray(savedTasks) || JSON.stringify(savedTasks) !== JSON.stringify(sourceTasks)) {
+      throw new Error('保存後の確認に失敗しました。もう一度お試しください。');
+    }
     updateSyncBtn('ok');
-    showSyncError('この端末の内容を正解として保存しました。', true);
+    showSyncError(`この端末の予定 ${sourceTasks.length}件を同期先へ保存し、確認できました。`, true);
   } catch(e) {
     syncAuthoritativeAt = previousAuthoritativeAt;
     localStorage.setItem('hizuke_sync_authoritative_at', String(syncAuthoritativeAt));
     updateSyncBtn('error');
     showSyncError(e.message || String(e));
+  } finally {
+    syncing = false;
+    if (syncDirty) queuePush();
   }
 }
 
 async function replaceThisDeviceFromGist(){
   if (!ghToken || !ghGistId) { showSyncError('先にGitHubへ接続してください。'); return; }
+  if (syncing) { showSyncError('いま自動同期中です。数秒待って、もう一度押してください。'); return; }
   if (!confirm('この端末の現在の予定を退避して、同期先の内容に置き換えますか？')) return;
+  clearTimeout(pushTimer);
+  syncDirty = false;
+  syncing = true;
   updateSyncBtn('syncing');
   try {
-    const res = await fetch(`https://api.github.com/gists/${ghGistId}`, { headers:ghHeaders() });
+    const res = await fetch(`https://api.github.com/gists/${ghGistId}?fresh=${Date.now()}`, {
+      headers:{ ...ghHeaders(), 'Cache-Control':'no-cache' }, cache:'no-store'
+    });
     if (!res.ok) throw new Error(`取得できませんでした（HTTP ${res.status}）`);
     const data = await res.json();
     const file = data.files && data.files['hizuke-tasks.json'];
@@ -617,10 +641,13 @@ async function replaceThisDeviceFromGist(){
     updateSyncBtn('ok');
     renderAll();
     openSyncSheet();
-    showSyncError('同期先の内容をこの端末へ入れました。', true);
+    showSyncError(`同期先の予定 ${tasks.length}件をこの端末へ入れました。`, true);
   } catch(e) {
     updateSyncBtn('error');
     showSyncError(e.message || String(e));
+  } finally {
+    syncing = false;
+    if (syncDirty) queuePush();
   }
 }
 
