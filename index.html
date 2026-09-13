@@ -267,7 +267,7 @@ async function createGist(){
 
 async function pullFromGist(){
   const res = await fetch(`https://api.github.com/gists/${ghGistId}?fresh=${Date.now()}`, {
-    headers: { ...ghHeaders(), 'Cache-Control':'no-cache' }, cache:'no-store'
+    headers: ghHeaders(), cache:'no-store'
   });
   if (!res.ok) { const t = await res.text().catch(()=> ''); throw new Error(`取得に失敗 (HTTP ${res.status}) ${t.slice(0,150)}`); }
   const data = await res.json();
@@ -619,7 +619,7 @@ async function replaceThisDeviceFromGist(){
   updateSyncBtn('syncing');
   try {
     const res = await fetch(`https://api.github.com/gists/${ghGistId}?fresh=${Date.now()}`, {
-      headers:{ ...ghHeaders(), 'Cache-Control':'no-cache' }, cache:'no-store'
+      headers:ghHeaders(), cache:'no-store'
     });
     if (!res.ok) throw new Error(`取得できませんでした（HTTP ${res.status}）`);
     const data = await res.json();
