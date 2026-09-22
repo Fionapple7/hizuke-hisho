@@ -228,6 +228,40 @@ function mergeSyncState(remote){
   saveTasks({ push:false });
 }
 
+let pendingInboxNotice = 0;
+
+function importInboxTasks(items){
+  if (!Array.isArray(items)) return 0;
+  const existingIds = new Set(tasks.map(task=>String(task.id)));
+  const now = Date.now();
+  let added = 0;
+  items.forEach((item, index)=>{
+    if (!item || typeof item !== 'object') return;
+    const id = String(item.externalId || item.id || '').trim();
+    const title = typeof item.title === 'string' ? item.title.trim() : '';
+    if (!id || !title || existingIds.has(id)) return;
+    const dueDate = typeof item.dueDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item.dueDate) ? item.dueDate : '';
+    const time = typeof item.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(item.time) ? item.time : '';
+    tasks.push({
+      id,
+      title,
+      dueDate,
+      time,
+      note: typeof item.note === 'string' ? item.note : '',
+      done: item.done === true,
+      notify: item.notify === true && !!dueDate && !!time,
+      recurrence: null,
+      lastNotifiedDate:'',
+      lastPreNotifiedDate:'',
+      updatedAt:now + index
+    });
+    existingIds.add(id);
+    added++;
+  });
+  if (added) saveTasks({ push:false });
+  return added;
+}
+
 /* ---------------- GitHub Gist 同期 ---------------- */
 let ghToken = localStorage.getItem('hizuke_gh_token') || '';
 let ghGistId = localStorage.getItem('hizuke_gist_id') || '';
@@ -256,7 +290,8 @@ async function createGist(){
       public: false,
       files: {
         'hizuke-tasks.json': { content: JSON.stringify(tasks, null, 2) },
-        'hizuke-sync-meta.json': { content: JSON.stringify(buildSyncMeta(), null, 2) }
+        'hizuke-sync-meta.json': { content: JSON.stringify(buildSyncMeta(), null, 2) },
+        'hizuke-inbox.json': { content: '[]' }
       }
     })
   });
@@ -273,6 +308,7 @@ async function pullFromGist(){
   const data = await res.json();
   const file = data.files && data.files['hizuke-tasks.json'];
   const metaFile = data.files && data.files['hizuke-sync-meta.json'];
+  const inboxFile = data.files && data.files['hizuke-inbox.json'];
   if (file && file.content) {
     let remote = JSON.parse(file.content);
     if (Array.isArray(remote) && metaFile && metaFile.content) {
@@ -289,6 +325,12 @@ async function pullFromGist(){
     } else {
       mergeSyncState(remote);
     }
+  }
+  if (inboxFile && inboxFile.content) {
+    try {
+      const added = importInboxTasks(JSON.parse(inboxFile.content));
+      pendingInboxNotice += added;
+    } catch(e){}
   }
 }
 
@@ -328,8 +370,18 @@ function queuePush(){
 
 async function initialPull(){
   if (!ghToken || !ghGistId) { updateSyncBtn(); return; }
+  if (syncing) return;
   updateSyncBtn('syncing');
-  try { const ok = await pushToGist(); updateSyncBtn(ok ? 'ok' : 'error'); renderAll(); }
+  try {
+    const ok = await pushToGist();
+    updateSyncBtn(ok ? 'ok' : 'error');
+    renderAll();
+    if (ok && pendingInboxNotice) {
+      const count = pendingInboxNotice;
+      pendingInboxNotice = 0;
+      showToast(`柏木からの予定を${count}件追加しました`);
+    }
+  }
   catch(e) { updateSyncBtn('error'); }
 }
 
@@ -1952,6 +2004,12 @@ initialPull();
 maybeAutoNotify();
 checkTaskNotifications();
 setInterval(()=>{ maybeAutoNotify(); checkTaskNotifications(); }, 30000);
+document.addEventListener('visibilitychange', ()=>{
+  if (!document.hidden) initialPull();
+});
+setInterval(()=>{
+  if (!document.hidden) initialPull();
+}, 120000);
 </script>
 </body>
 </html>
