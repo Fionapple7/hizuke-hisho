@@ -109,7 +109,7 @@
   .mic-circle.listening{ background:var(--urgent); }
   .voice-status{ text-align:center; margin-top:12px; font-size:13px; color:var(--ink-soft); min-height:40px; }
   .footer-link{ text-align:center; margin-top:22px; }
-  .footer-link a{ color:var(--ink-soft); font-size:12px; }
+  .footer-help{ color:var(--ink-soft); font:500 13px inherit; border:1px solid rgba(46,64,52,.16); background:var(--card); border-radius:22px; padding:9px 15px; cursor:pointer; }
   .loading-center{ text-align:center; padding:40px; color:var(--ink-soft); }
   .photo-preview{ width:100%; max-height:220px; object-fit:contain; border-radius:12px; background:var(--paper); margin-bottom:12px; }
   .photo-tip{ font-size:12px; line-height:1.6; color:var(--ink-soft); margin:4px 2px 12px; }
@@ -140,6 +140,30 @@
   .weekday-checks span{ width:34px; height:34px; border-radius:50%; border:1px solid rgba(46,64,52,.25); display:flex; align-items:center; justify-content:center; font-size:12px; background:var(--card); }
   .weekday-checks input:checked + span{ background:var(--ink); color:var(--card); border-color:var(--ink); }
   .spin{ display:inline-block; animation:spin 1s linear infinite; }
+  .help-hero{ background:linear-gradient(145deg,rgba(92,133,103,.16),rgba(155,138,63,.10)); border:1px solid rgba(46,64,52,.12); border-radius:16px; padding:18px; display:flex; align-items:center; gap:14px; }
+  .help-hero-icon{ width:58px; height:58px; border-radius:50%; background:var(--card); display:flex; align-items:center; justify-content:center; font-size:30px; box-shadow:0 3px 10px rgba(46,64,52,.10); flex-shrink:0; }
+  .help-hero-title{ font-size:17px; font-weight:700; margin-bottom:4px; }
+  .help-copy{ color:var(--ink-soft); font-size:12.5px; line-height:1.7; }
+  .help-jump{ display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin:12px 0 20px; }
+  .help-jump button{ border:1px solid rgba(46,64,52,.15); border-radius:10px; background:var(--paper); color:var(--ink); padding:9px 5px; font:600 11px inherit; cursor:pointer; }
+  .help-section{ scroll-margin-top:12px; margin:0 0 22px; }
+  .help-section h3{ font-size:15px; margin:0 0 10px; display:flex; align-items:center; gap:7px; }
+  .help-steps{ display:flex; flex-direction:column; gap:9px; }
+  .help-step{ display:grid; grid-template-columns:34px 1fr; gap:10px; background:var(--paper); border:1px solid rgba(46,64,52,.10); border-radius:13px; padding:12px; }
+  .help-step-no{ width:30px; height:30px; border-radius:50%; background:var(--ink); color:var(--card); display:flex; align-items:center; justify-content:center; font-family:'Zilla Slab',serif; font-weight:700; }
+  .help-step b{ display:block; font-size:13.5px; margin-bottom:3px; }
+  .help-figure{ margin-top:9px; border-radius:10px; background:var(--card); border:1px solid rgba(46,64,52,.12); padding:9px; display:flex; align-items:center; gap:8px; font-size:12px; }
+  .help-figure .fake-btn{ border-radius:18px; background:var(--ink); color:var(--card); padding:6px 10px; font-weight:700; white-space:nowrap; }
+  .help-figure .fake-field{ flex:1; min-width:0; border:1px solid rgba(113,137,122,.35); background:var(--paper); border-radius:7px; padding:7px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .help-choice{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .help-choice-card{ text-align:center; border:1px solid rgba(46,64,52,.12); background:var(--paper); border-radius:12px; padding:12px 5px; font-size:11px; line-height:1.45; }
+  .help-choice-card span{ display:block; font-size:25px; margin-bottom:5px; }
+  .help-alert{ background:rgba(176,104,76,.08); border:1px solid rgba(176,104,76,.25); border-radius:13px; padding:13px; margin-bottom:10px; }
+  .help-alert b{ display:block; font-size:13.5px; margin-bottom:5px; }
+  .help-details{ border-top:1px solid rgba(46,64,52,.12); padding:12px 2px; }
+  .help-details summary{ cursor:pointer; font-size:13.5px; font-weight:700; }
+  .help-details .help-copy{ padding:9px 2px 0; }
+  @media (max-width:360px){ .help-choice{ grid-template-columns:1fr; } .help-choice-card{ display:flex; align-items:center; gap:10px; text-align:left; padding:9px 12px; } .help-choice-card span{ margin:0; } }
   @keyframes spin{ to{ transform:rotate(360deg); } }
 </style>
 </head>
@@ -163,7 +187,7 @@
 <div id="briefingArea"></div>
 <div id="mainArea"></div>
 
-<div class="footer-link"><a href="#" onclick="alert('感想はメモ帳などにひとまず控えておいてくださいね。'); return false;">この秘書について</a></div>
+<div class="footer-link"><button class="footer-help" onclick="openHelpSheet()">📖 使い方・困ったとき</button></div>
 
 <button class="fab" onclick="openTalkSheet()" style="bottom:92px; background:var(--mid);">🎙</button>
 <button class="fab" onclick="openAddSheet(null)">＋</button>
@@ -739,6 +763,7 @@ let voiceTranscript = '';
 let voiceCandidates = [];
 let voiceOriginMode = 'voice';
 let voiceErrorMessage = '';
+let voiceErrorCode = '';
 let voiceRequestId = 0;
 let photoText = '';
 let photoCandidates = [];
@@ -1206,6 +1231,25 @@ function addTask(title, dueDate, time, note, notify, recurrence=null){
 }
 
 /* ---------------- 追加シート ---------------- */
+function openHelpSheet(sectionId=''){
+  voiceRequestId++;
+  if (recognition) { try{ recognition.stop(); }catch(e){} }
+  recognition = null;
+  listening = false;
+  editingTaskId = null;
+  sheetMode = 'help';
+  renderSheet();
+  if (sectionId) requestAnimationFrame(()=>{
+    const section = document.getElementById(sectionId);
+    if (section) section.scrollIntoView({ behavior:'smooth', block:'start' });
+  });
+}
+
+function scrollHelpTo(sectionId){
+  const section = document.getElementById(sectionId);
+  if (section) section.scrollIntoView({ behavior:'smooth', block:'start' });
+}
+
 function openAddSheet(dateISO){
   presetDate = dateISO || null;
   editingTaskId = null;
@@ -1221,6 +1265,7 @@ function openTalkSheet(){
   voiceTranscript = '';
   voiceCandidates = [];
   voiceErrorMessage = '';
+  voiceErrorCode = '';
   voiceOriginMode = 'talk';
   sheetMode = 'talk';
   renderSheet();
@@ -1229,6 +1274,7 @@ function openVoiceEntry(){
   voiceTranscript = '';
   voiceCandidates = [];
   voiceErrorMessage = '';
+  voiceErrorCode = '';
   voiceOriginMode = 'voice';
   sheetMode = 'voice';
   renderSheet();
@@ -1245,7 +1291,7 @@ function openEditSheet(id){
 function closeSheet(){
   voiceRequestId++;
   if (recognition) { try{ recognition.stop(); }catch(e){} }
-  listening = false; voiceTranscript=''; voiceCandidates=[]; voiceErrorMessage='';
+  listening = false; voiceTranscript=''; voiceCandidates=[]; voiceErrorMessage=''; voiceErrorCode='';
   editingTaskId = null;
   clearPhotoState();
   document.getElementById('sheetRoot').innerHTML = '';
@@ -1265,7 +1311,50 @@ function clearPhotoState(){
 
 function renderSheet(){
   let body = '';
-  if (sheetMode === 'menu') {
+  if (sheetMode === 'help') {
+    body = `
+      <div class="help-hero">
+        <div class="help-hero-icon">🖋️</div>
+        <div><div class="help-hero-title">暦司は、予定を忘れないための秘書です</div><div class="help-copy">まずは右下の「＋」から予定を入れてみましょう。間違えても、保存前に直せます。</div></div>
+      </div>
+      <div class="help-jump">
+        <button onclick="scrollHelpTo('helpStart')">はじめ方</button>
+        <button onclick="scrollHelpTo('helpVoice')">音声入力</button>
+        <button onclick="scrollHelpTo('helpMore')">便利な機能</button>
+      </div>
+
+      <section class="help-section" id="helpStart">
+        <h3>🌱 予定を入れる基本の3手順</h3>
+        <div class="help-steps">
+          <div class="help-step"><div class="help-step-no">1</div><div><b>右下の「＋」を押す</b><div class="help-copy">入力方法を選ぶ画面が開きます。</div><div class="help-figure"><span style="flex:1;">画面の右下</span><span class="fake-btn">＋</span></div></div></div>
+          <div class="help-step"><div class="help-step-no">2</div><div><b>予定を伝える</b><div class="help-copy">いちばん確実なのはテキスト入力です。写真や声も選べます。</div><div class="help-choice" style="margin-top:9px;"><div class="help-choice-card"><span>📝</span>文字で入力</div><div class="help-choice-card"><span>📷</span>写真から</div><div class="help-choice-card"><span>🎙</span>声で伝える</div></div></div></div>
+          <div class="help-step"><div class="help-step-no">3</div><div><b>内容を確認して保存する</b><div class="help-copy">予定名・日付・時間を直してから「カレンダーに追加」を押します。</div><div class="help-figure"><span class="fake-field">予定名　日付　時間</span><span class="fake-btn">追加</span></div></div></div>
+        </div>
+        <button class="primary-btn" onclick="sheetMode='menu'; renderSheet();">＋ 予定を入れてみる</button>
+      </section>
+
+      <section class="help-section" id="helpVoice">
+        <h3>🎙 音声入力の使い方</h3>
+        <div class="help-alert"><b>「うまく聞き取れませんでした」と出たら</b><div class="help-copy">マイクの故障とは限りません。権限、周囲の音、通信状態、ブラウザの対応状況によっても失敗します。</div></div>
+        <div class="help-steps">
+          <div class="help-step"><div class="help-step-no">1</div><div><b>マイクの使用を許可する</b><div class="help-copy">ブラウザから確認が出たら「許可」を選びます。拒否した場合は、ブラウザのサイト設定でマイクを許可してください。</div></div></div>
+          <div class="help-step"><div class="help-step-no">2</div><div><b>🎙を押し、「聞いています」が出てから話す</b><div class="help-copy">予定名、日付、時間の順に、短く区切らずひと息で話します。</div><div class="help-figure"><span style="font-size:23px;">🎙</span><span class="fake-field">歯医者、来週の水曜日、午後3時</span></div></div></div>
+          <div class="help-step"><div class="help-step-no">3</div><div><b>聞き取った文字を確認する</b><div class="help-copy">間違いがあっても、その場で文字を直してから予定にできます。</div></div></div>
+        </div>
+        <div class="help-copy" style="margin:10px 2px;">何度試しても失敗する場合は、静かな場所で短く話すか、下のボタンから文字入力を使ってください。</div>
+        <button class="menu-btn" style="justify-content:center;" onclick="sheetMode='text'; voiceErrorMessage=''; voiceErrorCode=''; renderSheet();">📝 文字入力に切り替える</button>
+      </section>
+
+      <section class="help-section" id="helpMore">
+        <h3>✨ 覚えておくと便利なこと</h3>
+        <details class="help-details" open><summary>予定を完了・編集・削除する</summary><div class="help-copy">左の丸を押すと完了です。右の「✏️」で編集、「🗑」で削除できます。削除直後は「元に戻す」も使えます。</div></details>
+        <details class="help-details"><summary>リストとカレンダーを切り替える</summary><div class="help-copy">画面上部の「📋 リスト」と「🗓 カレンダー」で切り替えます。カレンダーの日付を押すと、その日の予定だけ確認できます。</div></details>
+        <details class="help-details"><summary>毎週・毎月の予定を入れる</summary><div class="help-copy">予定の確認画面にある「くり返し」から選びます。完了すると、次回の日付へ自動で進みます。</div></details>
+        <details class="help-details"><summary>PCとスマホで同じ予定を見る</summary><div class="help-copy">同期画面で、両方の端末に同じGist IDを設定します。内容が違う時は、正しい端末で「この端末の内容を正解にする」を押します。</div></details>
+        <details class="help-details"><summary>通知について</summary><div class="help-copy">通知は暦司を開いている間だけ動きます。ブラウザを完全に閉じている時は通知されません。</div></details>
+      </section>
+    `;
+  } else if (sheetMode === 'menu') {
     body = `
       <button class="menu-btn" onclick="sheetMode='text'; renderSheet();">📝 テキストで入力</button>
       <label class="menu-btn" style="display:flex;">📷 カメラで撮る
@@ -1348,7 +1437,7 @@ function renderSheet(){
       <div class="photo-tip">「歯医者、来週の水曜日、午後3時」のように、予定名・日付・時間の順で、ひと息でゆっくり話してください。</div>
       <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
       <div class="voice-status">${listening ? `聞いています…<br><b>${escapeHTML(voiceTranscript)}</b>` : (voiceTranscript || 'タップして話しかけてください')}</div>
-      <div id="voiceError">${voiceErrorMessage?`<div class="error-line">${escapeHTML(voiceErrorMessage)}</div>`:''}</div>
+      <div id="voiceError">${voiceErrorMessage?`<div class="error-line">${escapeHTML(voiceErrorMessage)}</div>${voiceErrorCode?`<div class="photo-tip">確認用コード：${escapeHTML(voiceErrorCode)}</div>`:''}<button class="menu-btn" style="justify-content:center;margin-top:10px;" onclick="openHelpSheet('helpVoice')">音声入力の確認方法を見る</button>`:''}</div>
     `;
   } else if (sheetMode === 'talk') {
     body = `
@@ -1358,7 +1447,7 @@ function renderSheet(){
       </div>
       <button class="mic-circle ${listening?'listening':''}" onclick="toggleVoice()">🎙</button>
       <div class="voice-status">${listening ? `聞いています…<br><b>${escapeHTML(voiceTranscript)}</b>` : (voiceTranscript || 'タップして話しかけてください')}</div>
-      <div id="voiceError">${voiceErrorMessage?`<div class="error-line">${escapeHTML(voiceErrorMessage)}</div>`:''}</div>
+      <div id="voiceError">${voiceErrorMessage?`<div class="error-line">${escapeHTML(voiceErrorMessage)}</div>${voiceErrorCode?`<div class="photo-tip">確認用コード：${escapeHTML(voiceErrorCode)}</div>`:''}<button class="menu-btn" style="justify-content:center;margin-top:10px;" onclick="openHelpSheet('helpVoice')">音声入力の確認方法を見る</button>`:''}</div>
     `;
   } else if (sheetMode === 'voice-review') {
     body = `
@@ -1452,7 +1541,7 @@ function renderSheet(){
   document.getElementById('sheetRoot').innerHTML = `
     <div class="sheet-overlay" onclick="if(event.target===this) closeSheet();">
       <div class="sheet">
-        <div class="sheet-head"><div class="sheet-title">${sheetMode==='talk'||sheetMode==='talk-result' ? '秘書に話しかける' : (sheetMode==='voice-review' ? '聞き取った内容を確認' : (editingTaskId ? '予定を編集' : '予定を追加'))}</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
+        <div class="sheet-head"><div class="sheet-title">${sheetMode==='help' ? '使い方・困ったとき' : (sheetMode==='talk'||sheetMode==='talk-result' ? '秘書に話しかける' : (sheetMode==='voice-review' ? '聞き取った内容を確認' : (editingTaskId ? '予定を編集' : '予定を追加')))}</div><button class="close-btn" onclick="closeSheet()">✕</button></div>
         ${body}
       </div>
     </div>`;
@@ -1725,12 +1814,30 @@ function submitPhotoManual(){
   renderSheet();
 }
 
+function getVoiceErrorMessage(code){
+  const messages = {
+    'not-allowed':'マイクの使用が許可されていません。ブラウザのサイト設定でマイクを許可してください。',
+    'service-not-allowed':'このブラウザでは音声認識サービスを利用できません。文字入力をお使いください。',
+    'no-speech':'声を確認できませんでした。「聞いています」と表示されてから、端末に近づいて話してください。',
+    'audio-capture':'マイクを使えませんでした。ほかのアプリがマイクを使用していないか確認してください。',
+    'network':'音声認識の通信に失敗しました。通信状態を確認して、もう一度お試しください。',
+    'aborted':'音声入力を中止しました。もう一度マイクを押すか、文字入力をお使いください。'
+  };
+  return messages[code] || '音声を読み取れませんでした。もう一度試すか、文字入力をお使いください。';
+}
+
 function toggleVoice(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { voiceErrorMessage='この端末では音声入力に対応していません。文字入力をお使いください。'; renderSheet(); return; }
+  if (!SR) {
+    voiceErrorCode = 'not-supported';
+    voiceErrorMessage = 'この端末またはブラウザでは音声入力に対応していません。文字入力をお使いください。';
+    renderSheet();
+    return;
+  }
   if (listening) { recognition.stop(); return; }
   voiceOriginMode = sheetMode === 'talk' ? 'talk' : 'voice';
   voiceErrorMessage = '';
+  voiceErrorCode = '';
   voiceCandidates = [];
   recognition = new SR();
   const requestId = ++voiceRequestId;
@@ -1764,9 +1871,8 @@ function toggleVoice(){
   recognition.onerror = (event)=>{
     if (requestId !== voiceRequestId) return;
     listening = false;
-    voiceErrorMessage = event.error === 'not-allowed'
-      ? 'マイクの使用が許可されていません。ブラウザの設定をご確認ください。'
-      : 'うまく聞き取れませんでした。静かな場所でもう一度お試しください。';
+    voiceErrorCode = event.error || 'unknown';
+    voiceErrorMessage = getVoiceErrorMessage(voiceErrorCode);
     renderSheet();
   };
   recognition.onend = ()=>{
@@ -1787,7 +1893,15 @@ function toggleVoice(){
   voiceTranscript = '';
   listening = true;
   renderSheet();
-  recognition.start();
+  try {
+    recognition.start();
+  } catch(e) {
+    listening = false;
+    recognition = null;
+    voiceErrorCode = 'start-failed';
+    voiceErrorMessage = '音声入力を開始できませんでした。少し待ってもう一度試すか、文字入力をお使いください。';
+    renderSheet();
+  }
 }
 
 function selectVoiceCandidate(index){
@@ -1800,6 +1914,7 @@ function retryVoiceEntry(){
   voiceTranscript = '';
   voiceCandidates = [];
   voiceErrorMessage = '';
+  voiceErrorCode = '';
   sheetMode = voiceOriginMode;
   renderSheet();
 }
